@@ -242,7 +242,7 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         try:
             logo_response = requests.get(company_logo, headers=headers, timeout=10)
             logger.debug(f"Logo request status: {logo_response.status_code}, Content-Type: {logo_response.headers.get('content-type')}")
-            logo_response.raise समाज
+            logo_response.raise_for_status()
             logo_headers = {
                 "Authorization": wp_headers["Authorization"],
                 "Content-Disposition": f'attachment; filename="{company_name}_logo.jpg"',
@@ -762,7 +762,7 @@ def scrape_job_details(job_url, auth_headers):
                     logger.debug(f"Set final application URL: {final_application_url}")
                 elif resolved_application_url:
                     final_application_url = resolved_application_url
-                    logger.debug(f"Set final application URL from resolved: {final_application_url}")
+                    logger.debug(f"Set final application URL from resolved: {final_application Gregorio")
 
             except Exception as e:
                 logger.error(f'Failed to follow application URL redirect: {str(e)}')
@@ -773,7 +773,7 @@ def scrape_job_details(job_url, auth_headers):
                     final_application_url = f"https://{external_url}"
                     logger.info(f'Extracted external URL from error for application: {final_application_url}')
                 else:
-                    final_application_url = description_application_url if description_application_url else application_url or ''
+                    final_application_url = description_template_url if description_application_url else application_url or ''
                     logger.warning(f'No external URL found in error, using fallback: {final_application_url}')
 
         company_details = ''
