@@ -762,7 +762,7 @@ def scrape_job_details(job_url, auth_headers):
                     logger.debug(f"Set final application URL: {final_application_url}")
                 elif resolved_application_url:
                     final_application_url = resolved_application_url
-                    logger.debug(f"Set final application URL from resolved: {final_application Gregorio")
+                    logger.debug(f"Set final application URL from resolved: {final_application_url}")
 
             except Exception as e:
                 logger.error(f'Failed to follow application URL redirect: {str(e)}')
