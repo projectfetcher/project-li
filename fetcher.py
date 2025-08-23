@@ -12,8 +12,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging for verbose output
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[
+    logging.StreamHandler(),  # Output to console
+    logging.FileHandler('fetcher.log')  # Save to file for debugging
+])
 logger = logging.getLogger(__name__)
 
 # HTTP headers for scraping
@@ -21,13 +24,15 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
 }
 
-# Get environment variables (from Service)
-WP_SITE_URL = os.getenv('WP_SITE_URL')  # Passed as input from plugin
-WP_USERNAME = os.getenv('WP_USERNAME')  # Try environment variable first
-WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')  # Try environment variable first
-COUNTRY = os.getenv('COUNTRY')  # Passed as input from plugin
-KEYWORD = os.getenv('KEYWORD', '')  # Passed as input from plugin, optional
-FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')  # Optional for monetization/license check
+# Get environment variables
+logger.debug("Loading environment variables")
+WP_SITE_URL = os.getenv('WP_SITE_URL')
+WP_USERNAME = os.getenv('WP_USERNAME')
+WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
+COUNTRY = os.getenv('COUNTRY')
+KEYWORD = os.getenv('KEYWORD', '')
+FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')
+logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}")
 
 # Constants for WordPress
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
@@ -59,22 +64,28 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Stage": "Internship",
     "Bénévolat": "Volunteer"
 }
+logger.debug(f"WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_URL}, WP_MEDIA_URL={WP_MEDIA_URL}, WP_SAVE_COMPANY_URL={WP_SAVE_COMPANY_URL}, WP_SAVE_JOB_URL={WP_SAVE_JOB_URL}")
 
 def fetch_credentials():
     """Fetch WordPress credentials from the REST API if not provided in environment."""
     global WP_USERNAME, WP_APP_PASSWORD
+    logger.debug("Attempting to fetch WordPress credentials")
     if WP_USERNAME and WP_APP_PASSWORD:
-        logger.info("Using credentials from environment variables")
+        logger.info("Credentials provided via environment variables")
         return True
+    logger.info(f"Fetching credentials from {WP_CREDENTIALS_URL}")
     try:
         response = requests.get(WP_CREDENTIALS_URL, timeout=5, verify=False)
+        logger.debug(f"Credentials request status: {response.status_code}, Response: {response.text[:200]}...")
         response.raise_for_status()
         data = response.json()
+        logger.debug(f"Credentials response: {json.dumps(data, indent=2)[:200]}...")
         if not data.get('success'):
             logger.error(f"Failed to fetch credentials: {data.get('message', 'Unknown error')}")
             return False
         WP_USERNAME = data.get('wp_username')
         WP_APP_PASSWORD = data.get('wp_app_password')
+        logger.debug(f"Fetched WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}")
         if not WP_USERNAME or not WP_APP_PASSWORD:
             logger.error("Credentials fetched but empty or invalid")
             return False
@@ -86,47 +97,62 @@ def fetch_credentials():
 
 def check_fetcher_status(auth_headers):
     """Check the fetcher status from WordPress."""
+    logger.debug(f"Checking fetcher status at {WP_FETCHER_STATUS_URL}")
     try:
         response = requests.get(WP_FETCHER_STATUS_URL, headers=auth_headers, timeout=5, verify=False)
+        logger.debug(f"Fetcher status request status: {response.status_code}, Response: {response.text[:200]}...")
         response.raise_for_status()
         status = response.json().get('status', 'stopped')
-        logger.info(f"Fetcher status check: {status}")
+        logger.info(f"Fetcher status: {status}")
         return status
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to check fetcher status: {str(e)}")
         return 'stopped'
 
 def sanitize_text(text, is_url=False):
+    logger.debug(f"Sanitizing text: {text[:50]}... (is_url={is_url})")
     if not text:
+        logger.debug("Text is empty, returning empty string")
         return ''
     if is_url:
         text = text.strip()
         if not text.startswith(('http://', 'https://')):
             text = 'https://' + text
+        logger.debug(f"Sanitized URL: {text}")
         return text
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'(\w)\.(\w)', r'\1. \2', text)
     text = re.sub(r'(\w)(\w)', r'\1 \2', text) if re.match(r'^\w+$', text) else text
-    return ' '.join(text.split())
+    sanitized = ' '.join(text.split())
+    logger.debug(f"Sanitized text: {sanitized[:50]}...")
+    return sanitized
 
 def normalize_for_deduplication(text):
     """Normalize text for deduplication by removing spaces, punctuation, and converting to lowercase."""
+    logger.debug(f"Normalizing text for deduplication: {text[:50]}...")
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\s+', '', text)
-    return text.lower()
+    normalized = text.lower()
+    logger.debug(f"Normalized text: {normalized[:50]}...")
+    return normalized
 
 def generate_job_id(job_title, company_name):
     """Generate a unique job ID based on job title and company name."""
+    logger.debug(f"Generating job ID for title={job_title[:30]}..., company={company_name}")
     combined = f"{job_title}_{company_name}"
-    return hashlib.md5(combined.encode()).hexdigest()[:16]
+    job_id = hashlib.md5(combined.encode()).hexdigest()[:16]
+    logger.debug(f"Generated job ID: {job_id}")
+    return job_id
 
 def split_paragraphs(text, max_length=200):
     """Split large paragraphs into smaller ones, each up to max_length characters."""
+    logger.debug(f"Splitting paragraphs for text (length={len(text)}): {text[:50]}...")
     paragraphs = text.split('\n\n')
     result = []
     for para in paragraphs:
         para = para.strip()
         if not para:
+            logger.debug("Skipping empty paragraph")
             continue
         while len(para) > max_length:
             split_point = para.rfind(' ', 0, max_length)
@@ -135,25 +161,36 @@ def split_paragraphs(text, max_length=200):
             if split_point == -1:
                 split_point = max_length
             result.append(para[:split_point].strip())
+            logger.debug(f"Split paragraph: {para[:split_point].strip()[:50]}...")
             para = para[split_point:].strip()
         if para:
             result.append(para)
-    return '\n\n'.join(result)
+            logger.debug(f"Added paragraph: {para[:50]}...")
+    final_text = '\n\n'.join(result)
+    logger.debug(f"Final split text (length={len(final_text)}): {final_text[:50]}...")
+    return final_text
 
 def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
+    logger.debug(f"Getting or creating term: {term_name} for taxonomy {taxonomy}")
     term_name = sanitize_text(term_name)
     if not term_name:
+        logger.debug("Term name is empty, returning None")
         return None
     check_url = f"{wp_url}?search={term_name}"
+    logger.debug(f"Checking term at URL: {check_url}")
     try:
         response = requests.get(check_url, headers=auth_headers, timeout=5, verify=False)
+        logger.debug(f"Term check request status: {response.status_code}, Response: {response.text[:200]}...")
         response.raise_for_status()
         terms = response.json()
         for term in terms:
             if term['name'].lower() == term_name.lower():
+                logger.info(f"Found existing {taxonomy} term: {term_name}, ID: {term['id']}")
                 return term['id']
         post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
+        logger.debug(f"Creating new term with payload: {post_data}")
         response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=5, verify=False)
+        logger.debug(f"Term creation request status: {response.status_code}, Response: {response.text[:200]}...")
         response.raise_for_status()
         term = response.json()
         logger.info(f"Created new {taxonomy} term: {term_name}, ID: {term['id']}")
@@ -164,20 +201,25 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
 
 def check_existing_job(job_title, company_name, auth_headers):
     """Check if a job with the same title and company already exists on WordPress."""
+    logger.debug(f"Checking for existing job: {job_title[:30]}... at {company_name}")
     check_url = f"{WP_URL}?search={job_title}&meta_key=_company_name&meta_value={company_name}"
+    logger.debug(f"Checking job at URL: {check_url}")
     try:
         response = requests.get(check_url, headers=auth_headers, timeout=5, verify=False)
+        logger.debug(f"Existing job check status: {response.status_code}, Response: {response.text[:200]}...")
         response.raise_for_status()
         posts = response.json()
         if posts:
-            logger.info(f"Found existing job on WordPress: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
+            logger.info(f"Found existing job: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
             return posts[0].get('id'), posts[0].get('link')
+        logger.debug("No existing job found")
         return None, None
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
         return None, None
 
 def save_company_to_wordpress(index, company_data, wp_headers):
+    logger.debug(f"Saving company (index={index}): {json.dumps(company_data, indent=2)[:200]}...")
     if check_fetcher_status(wp_headers) != 'running':
         logger.info("Fetcher stopped before saving company")
         return None, None
@@ -192,18 +234,23 @@ def save_company_to_wordpress(index, company_data, wp_headers):
     company_address = company_data.get("company_address", "")
     
     company_id = hashlib.md5(company_name.encode()).hexdigest()[:16]
+    logger.debug(f"Generated company ID: {company_id} for {company_name}")
     
     attachment_id = 0
     if company_logo:
+        logger.debug(f"Uploading company logo: {company_logo}")
         try:
             logo_response = requests.get(company_logo, headers=headers, timeout=10)
-            logo_response.raise_for_status()
+            logger.debug(f"Logo request status: {logo_response.status_code}, Content-Type: {logo_response.headers.get('content-type')}")
+            logo_response.raise समाज
             logo_headers = {
                 "Authorization": wp_headers["Authorization"],
                 "Content-Disposition": f'attachment; filename="{company_name}_logo.jpg"',
                 "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
             }
+            logger.debug(f"Uploading logo to {WP_MEDIA_URL} with headers: {logo_headers}")
             media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
+            logger.debug(f"Media upload status: {media_response.status_code}, Response: {media_response.text[:200]}...")
             media_response.raise_for_status()
             attachment_id = media_response.json().get("id", 0)
             logger.info(f"Uploaded logo for {company_name}, Attachment ID: {attachment_id}")
@@ -224,15 +271,20 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         "company_twitter": "",
         "company_video": ""
     }
+    logger.debug(f"Company post payload: {json.dumps(post_data, indent=2)[:200]}...")
+    
     response = None
     try:
+        logger.debug(f"Sending company data to {WP_SAVE_COMPANY_URL}")
         response = requests.post(WP_SAVE_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15, verify=False)
+        logger.debug(f"Company save request status: {response.status_code}, Response: {response.text[:200]}...")
         response.raise_for_status()
         res = response.json()
+        logger.debug(f"Company save response: {json.dumps(res, indent=2)[:200]}...")
         if res.get("success"):
             logger.info(f"Successfully saved company {company_name}: Company ID {company_id}")
             return company_id, f"{WP_SITE_URL}/wp-content/uploads/companies.json"
-        elif res.get("message") == "Company exists":
+        elif res.get("message") == "Company already exists":
             logger.info(f"Found existing company {company_name}: Company ID {company_id}")
             return company_id, f"{WP_SITE_URL}/wp-content/uploads/companies.json"
         else:
@@ -243,6 +295,7 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         return None, None
 
 def save_article_to_wordpress(index, job_data, company_id, auth_headers):
+    logger.debug(f"Saving job (index={index}): {json.dumps(job_data, indent=2)[:200]}...")
     if check_fetcher_status(auth_headers) != 'running':
         logger.info("Fetcher stopped before saving job")
         return None, None
@@ -250,7 +303,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", "")
     job_type = job_data.get("job_type", "")
-    location = job_data.get("location", COUNTRY)  # Use country from env if not scraped
+    location = job_data.get("location", COUNTRY)
     job_url = job_data.get("job_url", "")
     company_name = job_data.get("company_name", "")
     company_logo = job_data.get("company_logo", "")
@@ -264,24 +317,31 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     application = ''
     if '@' in job_data.get("description_application_info", ""):
         application = job_data.get("description_application_info", "")
+        logger.debug(f"Using application email from description: {application}")
     elif job_data.get("resolved_application_url", ""):
         application = job_data.get("resolved_application_url", "")
+        logger.debug(f"Using resolved application URL: {application}")
     else:
         application = job_data.get("application_url", "")
+        logger.debug(f"Using application URL: {application}")
         if not application:
             logger.warning(f"No valid application email or URL found for job {job_title}")
 
     attachment_id = 0
     if company_logo:
+        logger.debug(f"Uploading job logo: {company_logo}")
         try:
             logo_response = requests.get(company_logo, headers=headers, timeout=10)
+            logger.debug(f"Job logo request status: {logo_response.status_code}, Content-Type: {logo_response.headers.get('content-type')}")
             logo_response.raise_for_status()
             logo_headers = {
                 "Authorization": auth_headers["Authorization"],
                 "Content-Disposition": f'attachment; filename="{company_name}_logo_job_{index}.jpg"',
                 "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
             }
+            logger.debug(f"Uploading job logo to {WP_MEDIA_URL} with headers: {logo_headers}")
             media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
+            logger.debug(f"Job logo upload status: {media_response.status_code}, Response: {media_response.text[:200]}...")
             media_response.raise_for_status()
             attachment_id = media_response.json().get("id", 0)
             logger.info(f"Uploaded logo for job {job_title}, Attachment ID: {attachment_id}")
@@ -309,12 +369,15 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         "company_video": ""
     }
     
-    logger.info(f"Final job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
+    logger.info(f"Job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
     
     try:
+        logger.debug(f"Sending job data to {WP_SAVE_JOB_URL}")
         response = requests.post(WP_SAVE_JOB_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
+        logger.debug(f"Job save request status: {response.status_code}, Response: {response.text[:200]}...")
         response.raise_for_status()
         res = response.json()
+        logger.debug(f"Job save response: {json.dumps(res, indent=2)[:200]}...")
         if res.get("success"):
             logger.info(f"Successfully saved job {job_title}: Job ID {job_id}")
             return job_id, f"{WP_SITE_URL}/wp-content/uploads/jobs.json"
@@ -330,18 +393,22 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
 
 def load_processed_ids():
     """Load processed job IDs from file."""
+    logger.debug(f"Loading processed job IDs from {PROCESSED_IDS_FILE}")
     processed_ids = set()
     try:
         if os.path.exists(PROCESSED_IDS_FILE):
             with open(PROCESSED_IDS_FILE, "r") as f:
                 processed_ids = set(line.strip() for line in f if line.strip())
             logger.info(f"Loaded {len(processed_ids)} processed job IDs from {PROCESSED_IDS_FILE}")
+        else:
+            logger.debug(f"No processed IDs file found at {PROCESSED_IDS_FILE}")
     except Exception as e:
         logger.error(f"Failed to load processed IDs from {PROCESSED_IDS_FILE}: {str(e)}")
     return processed_ids
 
 def save_processed_id(job_id):
     """Append a single job ID to the processed IDs file."""
+    logger.debug(f"Saving job ID {job_id} to {PROCESSED_IDS_FILE}")
     try:
         with open(PROCESSED_IDS_FILE, "a") as f:
             f.write(f"{job_id}\n")
@@ -351,18 +418,21 @@ def save_processed_id(job_id):
 
 def load_last_page():
     """Load the last processed page number."""
+    logger.debug(f"Loading last processed page from {LAST_PAGE_FILE}")
     try:
         if os.path.exists(LAST_PAGE_FILE):
             with open(LAST_PAGE_FILE, "r") as f:
                 page = int(f.read().strip())
                 logger.info(f"Loaded last processed page: {page}")
                 return page
+        logger.debug(f"No last page file found at {LAST_PAGE_FILE}")
     except Exception as e:
         logger.error(f"Failed to load last page from {LAST_PAGE_FILE}: {str(e)}")
     return 0
 
 def save_last_page(page):
     """Save the last processed page number."""
+    logger.debug(f"Saving last processed page {page} to {LAST_PAGE_FILE}")
     try:
         with open(LAST_PAGE_FILE, "w") as f:
             f.write(str(page))
@@ -371,7 +441,7 @@ def save_last_page(page):
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
 def crawl(auth_headers, processed_ids):
-    # Check initial fetcher status
+    logger.debug("Starting crawl process")
     if check_fetcher_status(auth_headers) != 'running':
         logger.info("Fetcher stopped by initial status check")
         print("Fetcher is not running. Exiting.")
@@ -381,9 +451,10 @@ def crawl(auth_headers, processed_ids):
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
+    logger.debug(f"Starting crawl from page {start_page}")
     
     for i in range(start_page, 15):
-        # Check status before processing each page
+        logger.debug(f"Processing page {i}")
         if check_fetcher_status(auth_headers) != 'running':
             logger.info("Fetcher stopped during page processing")
             print("Fetcher stopped by user. Exiting.")
@@ -396,7 +467,9 @@ def crawl(auth_headers, processed_ids):
             session = requests.Session()
             retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
             session.mount('https://', HTTPAdapter(max_retries=retries))
+            logger.debug(f"Sending request to {url} with headers: {headers}")
             response = session.get(url, headers=headers, timeout=15)
+            logger.debug(f"Search page request status: {response.status_code}, Response size: {len(response.text)} bytes")
             response.raise_for_status()
             if "login" in response.url or "challenge" in response.url:
                 logger.error("Login or CAPTCHA detected, stopping crawl")
@@ -408,7 +481,7 @@ def crawl(auth_headers, processed_ids):
             logger.info(f'Found {len(urls)} job URLs on page: {url}')
             
             for index, job_url in enumerate(urls):
-                # Check status before processing each job
+                logger.debug(f"Processing job {index + 1}/{len(urls)}: {job_url}")
                 if check_fetcher_status(auth_headers) != 'running':
                     logger.info("Fetcher stopped during job processing")
                     print("Fetcher stopped by user. Exiting.")
@@ -451,6 +524,7 @@ def crawl(auth_headers, processed_ids):
                     "final_application_url": job_data[25],
                     "job_salary": ""
                 }
+                logger.debug(f"Job data: {json.dumps(job_dict, indent=2)[:200]}...")
                 
                 job_title = job_dict.get("job_title", "Unknown Job")
                 company_name = job_dict.get("company_name", "")
@@ -474,11 +548,13 @@ def crawl(auth_headers, processed_ids):
                 
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
                 if company_id is None:
+                    logger.error(f"Failed to save company for job {job_title}")
                     failure_count += 1
                     continue
 
                 job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
                 if job_post_id is None:
+                    logger.error(f"Failed to save job {job_title}")
                     failure_count += 1
                     continue
                 
@@ -495,22 +571,25 @@ def crawl(auth_headers, processed_ids):
             print(f"Error fetching page {url}: {str(e)}")
             failure_count += 1
     
+    logger.info(f"Crawl completed. Total jobs: {total_jobs}, Success: {success_count}, Failures: {failure_count}")
     print("\n--- Summary ---")
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully posted: {success_count}")
     print(f"Failed to post or scrape: {failure_count}")
 
 def scrape_job_details(job_url, auth_headers):
+    logger.debug(f"Scraping job details from: {job_url}")
     if check_fetcher_status(auth_headers) != 'running':
         logger.info("Fetcher stopped before fetching job details")
         return None
 
-    logger.info(f'Fetching job details from: {job_url}')
     try:
         session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
         session.mount('https://', HTTPAdapter(max_retries=retries))
+        logger.debug(f"Sending request to {job_url} with headers: {headers}")
         response = session.get(job_url, headers=headers, timeout=15)
+        logger.debug(f"Job page request status: {response.status_code}, Response size: {len(response.text)} bytes")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -581,11 +660,13 @@ def scrape_job_details(job_url, auth_headers):
                 for p in paragraphs:
                     para = sanitize_text(p.get_text().strip())
                     if not para:
+                        logger.debug("Skipping empty paragraph in job description")
                         continue
                     norm_para = normalize_for_deduplication(para)
                     if norm_para and norm_para not in seen:
                         unique_paragraphs.append(para)
                         seen.add(norm_para)
+                        logger.debug(f"Added unique paragraph: {para[:50]}...")
                     elif norm_para:
                         logger.info(f"Removed duplicate paragraph in job description for {job_title}: {para[:50]}...")
                 job_description = '\n\n'.join(unique_paragraphs)
@@ -598,11 +679,13 @@ def scrape_job_details(job_url, auth_headers):
                 for para in paragraphs:
                     para = sanitize_text(para)
                     if not para:
+                        logger.debug("Skipping empty paragraph in job description")
                         continue
                     norm_para = normalize_for_deduplication(para)
                     if norm_para and norm_para not in seen:
                         unique_paragraphs.append(para)
                         seen.add(norm_para)
+                        logger.debug(f"Added unique paragraph: {para[:50]}...")
                     elif norm_para:
                         logger.info(f"Removed duplicate paragraph in job description for {job_title}: {para[:50]}...")
                 job_description = '\n\n'.join(unique_paragraphs)
@@ -645,6 +728,7 @@ def scrape_job_details(job_url, auth_headers):
                 logger.info("Fetcher stopped before following application URL")
                 return None
 
+            logger.debug(f"Following application URL: {application_url}")
             try:
                 time.sleep(5)
                 resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
@@ -668,13 +752,17 @@ def scrape_job_details(job_url, auth_headers):
 
                 if final_application_email and resolved_application_info and '@' in resolved_application_info:
                     final_application_email = final_application_email if final_application_email == resolved_application_info else final_application_email
+                    logger.debug(f"Kept final application email: {final_application_email}")
                 elif resolved_application_info and '@' in resolved_application_info:
                     final_application_email = final_application_email or resolved_application_info
+                    logger.debug(f"Set final application email: {final_application_email}")
 
                 if description_application_url and resolved_application_url:
                     final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
+                    logger.debug(f"Set final application URL: {final_application_url}")
                 elif resolved_application_url:
                     final_application_url = resolved_application_url
+                    logger.debug(f"Set final application URL from resolved: {final_application_url}")
 
             except Exception as e:
                 logger.error(f'Failed to follow application URL redirect: {str(e)}')
@@ -706,6 +794,7 @@ def scrape_job_details(job_url, auth_headers):
             logger.info(f'Fetching company page: {company_url}')
             try:
                 company_response = session.get(company_url, headers=headers, timeout=15)
+                logger.debug(f"Company page request status: {company_response.status_code}, Response size: {len(company_response.text)} bytes")
                 company_response.raise_for_status()
                 company_soup = BeautifulSoup(company_response.text, 'html.parser')
 
@@ -731,6 +820,7 @@ def scrape_job_details(job_url, auth_headers):
                         logger.info("Fetcher stopped before resolving company website")
                         return None
 
+                    logger.debug(f"Resolving company website URL: {company_website_url}")
                     try:
                         time.sleep(5)
                         resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
@@ -841,23 +931,24 @@ def scrape_job_details(job_url, auth_headers):
         return None
 
 def main():
-    # Fetch credentials if not provided
+    logger.debug("Starting main function")
     if not fetch_credentials():
         logger.error("Cannot proceed without valid WordPress credentials")
         print("Error: Cannot proceed without valid WordPress credentials")
         return
 
-    # Create authentication headers
     auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth_headers = {
         "Authorization": f"Basic {base64.b64encode(auth_string.encode()).decode()}"
     }
+    logger.debug(f"Created auth headers: Authorization=Basic {'***'}")
 
-    # Load processed job IDs
     processed_ids = load_processed_ids()
+    logger.debug(f"Loaded {len(processed_ids)} processed job IDs")
 
-    # Start crawling
     crawl(auth_headers, processed_ids)
 
 if __name__ == "__main__":
+    logger.debug("Script execution started")
     main()
+    logger.debug("Script execution completed")
