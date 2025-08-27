@@ -32,7 +32,13 @@ WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')
 FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')
+EXPECTED_KEY_TOKEN = 'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5'
+LICENSE_MESSAGE = 'Full job and company data requires a valid license. Get one at https://mimusjobs.com/jobfetcher'
 logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}")
+
+# Validate FETCHER_TOKEN
+IS_LICENSED = FETCHER_TOKEN == EXPECTED_KEY_TOKEN
+logger.debug(f"License status: {'Valid' if IS_LICENSED else 'Invalid or missing'}")
 
 # Constants for WordPress
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
@@ -110,7 +116,7 @@ def check_fetcher_status(auth_headers):
         return 'stopped'
 
 def sanitize_text(text, is_url=False):
-    logger.debug(f"Sanitizing text: {text[:50]}... (is_url={is_url})")
+    logger.debug(f"Sanitizing text: {text[:50] if text else ''}... (is_url={is_url})")
     if not text:
         logger.debug("Text is empty, returning empty string")
         return ''
@@ -129,7 +135,7 @@ def sanitize_text(text, is_url=False):
 
 def normalize_for_deduplication(text):
     """Normalize text for deduplication by removing spaces, punctuation, and converting to lowercase."""
-    logger.debug(f"Normalizing text for deduplication: {text[:50]}...")
+    logger.debug(f"Normalizing text for deduplication: {text[:50] if text else ''}...")
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\s+', '', text)
     normalized = text.lower()
@@ -138,7 +144,7 @@ def normalize_for_deduplication(text):
 
 def generate_job_id(job_title, company_name):
     """Generate a unique job ID based on job title and company name."""
-    logger.debug(f"Generating job ID for title={job_title[:30]}..., company={company_name}")
+    logger.debug(f"Generating job ID for title={job_title[:30] if job_title else ''}..., company={company_name}")
     combined = f"{job_title}_{company_name}"
     job_id = hashlib.md5(combined.encode()).hexdigest()[:16]
     logger.debug(f"Generated job ID: {job_id}")
@@ -146,7 +152,7 @@ def generate_job_id(job_title, company_name):
 
 def split_paragraphs(text, max_length=200):
     """Split large paragraphs into smaller ones, each up to max_length characters."""
-    logger.debug(f"Splitting paragraphs for text (length={len(text)}): {text[:50]}...")
+    logger.debug(f"Splitting paragraphs for text (length={len(text)}): {text[:50] if text else ''}...")
     paragraphs = text.split('\n\n')
     result = []
     for para in paragraphs:
@@ -201,7 +207,7 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
 
 def check_existing_job(job_title, company_name, auth_headers):
     """Check if a job with the same title and company already exists on WordPress."""
-    logger.debug(f"Checking for existing job: {job_title[:30]}... at {company_name}")
+    logger.debug(f"Checking for existing job: {job_title[:30] if job_title else ''}... at {company_name}")
     check_url = f"{WP_URL}?search={job_title}&meta_key=_company_name&meta_value={company_name}"
     logger.debug(f"Checking job at URL: {check_url}")
     try:
@@ -223,7 +229,10 @@ def save_company_to_wordpress(index, company_data, wp_headers):
     if check_fetcher_status(wp_headers) != 'running':
         logger.info("Fetcher stopped before saving company")
         return None, None
-
+    if not IS_LICENSED:
+        logger.info("Skipping company save due to invalid or missing license key")
+        print(LICENSE_MESSAGE)
+        return None, None
     company_name = company_data.get("company_name", "")
     company_details = company_data.get("company_details", "")
     company_logo = company_data.get("company_logo", "")
@@ -256,7 +265,6 @@ def save_company_to_wordpress(index, company_data, wp_headers):
             logger.info(f"Uploaded logo for {company_name}, Attachment ID: {attachment_id}")
         except Exception as e:
             logger.error(f"Failed to upload logo for {company_name}: {str(e)}")
-
     post_data = {
         "company_id": company_id,
         "company_name": sanitize_text(company_name),
@@ -299,36 +307,37 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     if check_fetcher_status(auth_headers) != 'running':
         logger.info("Fetcher stopped before saving job")
         return None, None
-
     job_title = job_data.get("job_title", "")
-    job_description = job_data.get("job_description", "")
+    job_description = LICENSE_MESSAGE if not IS_LICENSED else job_data.get("job_description", "")
     job_type = job_data.get("job_type", "")
     location = job_data.get("location", COUNTRY)
-    job_url = job_data.get("job_url", "")
+    job_url = LICENSE_MESSAGE if not IS_LICENSED else job_data.get("job_url", "")
     company_name = job_data.get("company_name", "")
-    company_logo = job_data.get("company_logo", "")
-    environment = job_data.get("environment", "").lower()
-    job_salary = job_data.get("job_salary", "")
-    company_industry = job_data.get("company_industry", "")
-    company_founded = job_data.get("company_founded", "")
+    company_logo = LICENSE_MESSAGE if not IS_LICENSED else job_data.get("company_logo", "")
+    environment = LICENSE_MESSAGE if not IS_LICENSED else job_data.get("environment", "").lower()
+    job_salary = LICENSE_MESSAGE if not IS_LICENSED else job_data.get("job_salary", "")
     
     job_id = generate_job_id(job_title, company_name)
     
     application = ''
-    if '@' in job_data.get("description_application_info", ""):
-        application = job_data.get("description_application_info", "")
-        logger.debug(f"Using application email from description: {application}")
-    elif job_data.get("resolved_application_url", ""):
-        application = job_data.get("resolved_application_url", "")
-        logger.debug(f"Using resolved application URL: {application}")
+    if IS_LICENSED:
+        if '@' in job_data.get("description_application_info", ""):
+            application = job_data.get("description_application_info", "")
+            logger.debug(f"Using application email from description: {application}")
+        elif job_data.get("resolved_application_url", ""):
+            application = job_data.get("resolved_application_url", "")
+            logger.debug(f"Using resolved application URL: {application}")
+        else:
+            application = job_data.get("application_url", "")
+            logger.debug(f"Using application URL: {application}")
+            if not application:
+                logger.warning(f"No valid application email or URL found for job {job_title}")
     else:
-        application = job_data.get("application_url", "")
-        logger.debug(f"Using application URL: {application}")
-        if not application:
-            logger.warning(f"No valid application email or URL found for job {job_title}")
-
+        application = LICENSE_MESSAGE
+        logger.debug(f"Application info restricted: {LICENSE_MESSAGE}")
+    
     attachment_id = 0
-    if company_logo:
+    if IS_LICENSED and company_logo and company_logo != LICENSE_MESSAGE:
         logger.debug(f"Uploading job logo: {company_logo}")
         try:
             logo_response = requests.get(company_logo, headers=headers, timeout=10)
@@ -347,7 +356,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
             logger.info(f"Uploaded logo for job {job_title}, Attachment ID: {attachment_id}")
         except Exception as e:
             logger.error(f"Failed to upload logo for job {job_title}: {str(e)}")
-
+    
     post_data = {
         "job_id": job_id,
         "job_title": sanitize_text(job_title),
@@ -355,16 +364,16 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         "featured_media": attachment_id,
         "job_location": sanitize_text(location),
         "job_type": sanitize_text(job_type),
-        "job_salary": sanitize_text(job_salary),
+        "job_salary": job_salary,
         "application": sanitize_text(application, is_url=('@' not in application)),
         "company_id": str(company_id) if company_id else "",
         "company_name": sanitize_text(company_name),
-        "company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
-        "company_logo": str(attachment_id) if attachment_id else "",
-        "company_tagline": sanitize_text(job_data.get("company_details", "")),
-        "company_address": sanitize_text(job_data.get("company_address", "")),
-        "company_industry": sanitize_text(company_industry),
-        "company_founded": sanitize_text(company_founded),
+        "company_website": LICENSE_MESSAGE if not IS_LICENSED else sanitize_text(job_data.get("company_website_url", ""), is_url=True),
+        "company_logo": str(attachment_id) if attachment_id else (LICENSE_MESSAGE if not IS_LICENSED else ""),
+        "company_tagline": LICENSE_MESSAGE if not IS_LICENSED else sanitize_text(job_data.get("company_details", "")),
+        "company_address": LICENSE_MESSAGE if not IS_LICENSED else sanitize_text(job_data.get("company_address", "")),
+        "company_industry": LICENSE_MESSAGE if not IS_LICENSED else sanitize_text(job_data.get("company_industry", "")),
+        "company_founded": LICENSE_MESSAGE if not IS_LICENSED else sanitize_text(job_data.get("company_founded", "")),
         "company_twitter": "",
         "company_video": ""
     }
@@ -446,7 +455,6 @@ def crawl(auth_headers, processed_ids):
         logger.info("Fetcher stopped by initial status check")
         print("Fetcher is not running. Exiting.")
         return
-
     success_count = 0
     failure_count = 0
     total_jobs = 0
@@ -459,7 +467,6 @@ def crawl(auth_headers, processed_ids):
             logger.info("Fetcher stopped during page processing")
             print("Fetcher stopped by user. Exiting.")
             break
-
         url = f'https://www.linkedin.com/jobs/search?keywords={KEYWORD}&location={COUNTRY}&start={i * 25}'
         logger.info(f'Fetching job search page: {url}')
         time.sleep(random.uniform(5, 10))
@@ -486,7 +493,6 @@ def crawl(auth_headers, processed_ids):
                     logger.info("Fetcher stopped during job processing")
                     print("Fetcher stopped by user. Exiting.")
                     break
-
                 job_data = scrape_job_details(job_url, auth_headers)
                 if not job_data:
                     logger.error(f"No data scraped for job: {job_url}")
@@ -497,32 +503,32 @@ def crawl(auth_headers, processed_ids):
                 
                 job_dict = {
                     "job_title": job_data[0],
-                    "company_logo": job_data[1],
+                    "company_logo": job_data[1] if IS_LICENSED else LICENSE_MESSAGE,
                     "company_name": job_data[2],
-                    "company_url": job_data[3],
+                    "company_url": job_data[3] if IS_LICENSED else LICENSE_MESSAGE,
                     "location": job_data[4],
-                    "environment": job_data[5],
+                    "environment": job_data[5] if IS_LICENSED else LICENSE_MESSAGE,
                     "job_type": job_data[6],
-                    "level": job_data[7],
-                    "job_functions": job_data[8],
-                    "industries": job_data[9],
-                    "job_description": job_data[10],
-                    "job_url": job_data[11],
-                    "company_details": job_data[12],
-                    "company_website_url": job_data[13],
-                    "company_industry": job_data[14],
-                    "company_size": job_data[15],
-                    "company_headquarters": job_data[16],
-                    "company_type": job_data[17],
-                    "company_founded": job_data[18],
-                    "company_specialties": job_data[19],
-                    "company_address": job_data[20],
-                    "application_url": job_data[21],
-                    "description_application_info": job_data[22],
-                    "resolved_application_info": job_data[23],
-                    "final_application_email": job_data[24],
-                    "final_application_url": job_data[25],
-                    "job_salary": ""
+                    "level": job_data[7] if IS_LICENSED else LICENSE_MESSAGE,
+                    "job_functions": job_data[8] if IS_LICENSED else LICENSE_MESSAGE,
+                    "industries": job_data[9] if IS_LICENSED else LICENSE_MESSAGE,
+                    "job_description": job_data[10] if IS_LICENSED else LICENSE_MESSAGE,
+                    "job_url": job_data[11] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_details": job_data[12] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_website_url": job_data[13] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_industry": job_data[14] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_size": job_data[15] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_headquarters": job_data[16] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_type": job_data[17] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_founded": job_data[18] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_specialties": job_data[19] if IS_LICENSED else LICENSE_MESSAGE,
+                    "company_address": job_data[20] if IS_LICENSED else LICENSE_MESSAGE,
+                    "application_url": job_data[21] if IS_LICENSED else LICENSE_MESSAGE,
+                    "description_application_info": job_data[22] if IS_LICENSED else LICENSE_MESSAGE,
+                    "resolved_application_info": job_data[23] if IS_LICENSED else LICENSE_MESSAGE,
+                    "final_application_email": job_data[24] if IS_LICENSED else LICENSE_MESSAGE,
+                    "final_application_url": job_data[25] if IS_LICENSED else LICENSE_MESSAGE,
+                    "job_salary": "" if IS_LICENSED else LICENSE_MESSAGE
                 }
                 logger.debug(f"Job data: {json.dumps(job_dict, indent=2)[:200]}...")
                 
@@ -547,11 +553,10 @@ def crawl(auth_headers, processed_ids):
                 total_jobs += 1
                 
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
-                if company_id is None:
+                if company_id is None and IS_LICENSED:
                     logger.error(f"Failed to save company for job {job_title}")
                     failure_count += 1
                     continue
-
                 job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
                 if job_post_id is None:
                     logger.error(f"Failed to save job {job_title}")
@@ -582,7 +587,6 @@ def scrape_job_details(job_url, auth_headers):
     if check_fetcher_status(auth_headers) != 'running':
         logger.info("Fetcher stopped before fetching job details")
         return None
-
     try:
         session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
@@ -592,19 +596,15 @@ def scrape_job_details(job_url, auth_headers):
         logger.debug(f"Job page request status: {response.status_code}, Response size: {len(response.text)} bytes")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-
         job_title = soup.select_one("h1.top-card-layout__title")
         job_title = job_title.get_text().strip() if job_title else ''
         logger.info(f'Scraped Job Title: {job_title}')
-
         company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\:w-core-rail-width.mamabear\:max-w-\[790px\].babybear\:max-w-\[790px\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\:rounded-\[0px\] > div > a > img")
         company_logo = (company_logo.get('data-delayed-url') or company_logo.get('src') or '') if company_logo else ''
         logger.info(f'Scraped Company Logo URL: {company_logo}')
-
         company_name = soup.select_one(".topcard__org-name-link")
         company_name = company_name.get_text().strip() if company_name else ''
         logger.info(f'Scraped Company Name: {company_name}')
-
         company_url = soup.select_one(".topcard__org-name-link")
         company_url = company_url['href'] if company_url and company_url.get('href') else ''
         if company_url:
@@ -612,17 +612,14 @@ def scrape_job_details(job_url, auth_headers):
             logger.info(f'Scraped Company URL: {company_url}')
         else:
             logger.info('No Company URL found')
-
         if check_fetcher_status(auth_headers) != 'running':
             logger.info("Fetcher stopped before fetching company details")
             return None
-
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
         location = location.get_text().strip() if location else COUNTRY
         location_parts = [part.strip() for part in location.split(',') if part.strip()]
         location = ', '.join(dict.fromkeys(location_parts))
         logger.info(f'Deduplicated location for {job_title}: {location}')
-
         environment = ''
         env_element = soup.select(".topcard__flavor--metadata")
         for elem in env_element:
@@ -631,24 +628,19 @@ def scrape_job_details(job_url, auth_headers):
                 environment = elem.get_text().strip()
                 break
         logger.info(f'Scraped Environment: {environment}')
-
         level = soup.select_one(".description__job-criteria-list > li:nth-child(1) > span")
         level = level.get_text().strip() if level else ''
         logger.info(f'Scraped Level: {level}')
-
         job_type = soup.select_one(".description__job-criteria-list > li:nth-child(2) > span")
         job_type = job_type.get_text().strip() if job_type else ''
         job_type = FRENCH_TO_ENGLISH_JOB_TYPE.get(job_type, job_type)
         logger.info(f'Scraped Type: {job_type}')
-
         job_functions = soup.select_one(".description__job-criteria-list > li:nth-child(3) > span")
         job_functions = job_functions.get_text().strip() if job_functions else ''
         logger.info(f'Scraped Job Functions: {job_functions}')
-
         industries = soup.select_one(".description__job-criteria-list > li:nth-child(4) > span")
         industries = industries.get_text().strip() if industries else ''
         logger.info(f'Scraped Industries: {industries}')
-
         job_description = ''
         description_container = soup.select_one(".show-more-less-html__markup")
         if description_container:
@@ -676,7 +668,7 @@ def scrape_job_details(job_url, auth_headers):
                 seen = set()
                 unique_paragraphs = []
                 logger.debug(f"Raw text paragraphs for {job_title}: {[sanitize_text(para)[:50] for para in paragraphs]}")
-                for para in paragraphs:
+                for p in paragraphs:
                     para = sanitize_text(para)
                     if not para:
                         logger.debug("Skipping empty paragraph in job description")
@@ -695,10 +687,9 @@ def scrape_job_details(job_url, auth_headers):
             logger.info(f"Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.splitlines())}")
         else:
             logger.warning(f"No job description container found for {job_title}")
-
         description_application_info = ''
         description_application_url = ''
-        if description_container:
+        if IS_LICENSED and description_container:
             email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
             emails = re.findall(email_pattern, job_description)
             if emails:
@@ -713,21 +704,20 @@ def scrape_job_details(job_url, auth_headers):
                         description_application_info = href
                         logger.info(f'Found application link in job description: {description_application_info}')
                         break
-
+        else:
+            description_application_info = LICENSE_MESSAGE
+            description_application_url = LICENSE_MESSAGE
         application_anchor = soup.select_one("#teriary-cta-container > div > a")
         application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else None
         logger.info(f'Scraped Application URL: {application_url}')
-
         resolved_application_info = ''
         resolved_application_url = ''
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
         final_application_url = description_application_url if description_application_url else ''
-
-        if application_url:
+        if IS_LICENSED and application_url:
             if check_fetcher_status(auth_headers) != 'running':
                 logger.info("Fetcher stopped before following application URL")
                 return None
-
             logger.debug(f"Following application URL: {application_url}")
             try:
                 time.sleep(5)
@@ -749,21 +739,18 @@ def scrape_job_details(job_url, auth_headers):
                             resolved_application_info = href
                             logger.info(f'Found application link in application page: {resolved_application_info}')
                             break
-
                 if final_application_email and resolved_application_info and '@' in resolved_application_info:
                     final_application_email = final_application_email if final_application_email == resolved_application_info else final_application_email
                     logger.debug(f"Kept final application email: {final_application_email}")
                 elif resolved_application_info and '@' in resolved_application_info:
                     final_application_email = final_application_email or resolved_application_info
                     logger.debug(f"Set final application email: {final_application_email}")
-
                 if description_application_url and resolved_application_url:
                     final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
                     logger.debug(f"Set final application URL: {final_application_url}")
                 elif resolved_application_url:
                     final_application_url = resolved_application_url
                     logger.debug(f"Set final application URL from resolved: {final_application_url}")
-
             except Exception as e:
                 logger.error(f'Failed to follow application URL redirect: {str(e)}')
                 error_str = str(e)
@@ -773,9 +760,13 @@ def scrape_job_details(job_url, auth_headers):
                     final_application_url = f"https://{external_url}"
                     logger.info(f'Extracted external URL from error for application: {final_application_url}')
                 else:
-                    final_application_url = description_template_url if description_application_url else application_url or ''
+                    final_application_url = description_application_url if description_application_url else application_url or ''
                     logger.warning(f'No external URL found in error, using fallback: {final_application_url}')
-
+        else:
+            resolved_application_info = LICENSE_MESSAGE
+            resolved_application_url = LICENSE_MESSAGE
+            final_application_email = LICENSE_MESSAGE
+            final_application_url = LICENSE_MESSAGE
         company_details = ''
         company_website_url = ''
         company_industry = ''
@@ -785,27 +776,22 @@ def scrape_job_details(job_url, auth_headers):
         company_founded = ''
         company_specialties = ''
         company_address = ''
-
-        if company_url:
+        if IS_LICENSED and company_url:
             if check_fetcher_status(auth_headers) != 'running':
                 logger.info("Fetcher stopped before fetching company page")
                 return None
-
             logger.info(f'Fetching company page: {company_url}')
             try:
                 company_response = session.get(company_url, headers=headers, timeout=15)
                 logger.debug(f"Company page request status: {company_response.status_code}, Response size: {len(company_response.text)} bytes")
                 company_response.raise_for_status()
                 company_soup = BeautifulSoup(company_response.text, 'html.parser')
-
                 company_details_elem = company_soup.select_one("p.about-us__description") or company_soup.select_one("section.core-section-container > div > p")
                 company_details = company_details_elem.get_text().strip() if company_details_elem else ''
                 logger.info(f'Scraped Company Details: {company_details[:100] + "..." if company_details else ""}')
-
                 company_website_anchor = company_soup.select_one("dl > div:nth-child(1) > dd > a")
                 company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
                 logger.info(f'Scraped Company Website URL: {company_website_url}')
-
                 if 'linkedin.com/redir/redirect' in company_website_url:
                     parsed_url = urlparse(company_website_url)
                     query_params = parse_qs(parsed_url.query)
@@ -814,12 +800,10 @@ def scrape_job_details(job_url, auth_headers):
                         logger.info(f'Extracted external company website from redirect: {company_website_url}')
                     else:
                         logger.warning(f'No "url" param in LinkedIn redirect for {company_name}')
-
                 if company_website_url and 'linkedin.com' not in company_website_url:
                     if check_fetcher_status(auth_headers) != 'running':
                         logger.info("Fetcher stopped before resolving company website")
                         return None
-
                     logger.debug(f"Resolving company website URL: {company_website_url}")
                     try:
                         time.sleep(5)
@@ -857,34 +841,26 @@ def scrape_job_details(job_url, auth_headers):
                             except Exception as e:
                                 logger.error(f'Failed to resolve company website from description: {str(e)}')
                                 company_website_url = ''
-
                 company_industry_elem = company_soup.select_one("dl > div:nth-child(2) > dd")
                 company_industry = company_industry_elem.get_text().strip() if company_industry_elem else ''
                 logger.info(f'Scraped Company Industry: {company_industry}')
-
                 company_size_elem = company_soup.select_one("dl > div:nth-child(3) > dd")
                 company_size = company_size_elem.get_text().strip() if company_size_elem else ''
                 logger.info(f'Scraped Company Size: {company_size}')
-
                 company_headquarters_elem = company_soup.select_one("dl > div:nth-child(4) > dd")
                 company_headquarters = company_headquarters_elem.get_text().strip() if company_headquarters_elem else ''
                 logger.info(f'Scraped Company Headquarters: {company_headquarters}')
-
                 company_type_elem = company_soup.select_one("dl > div:nth-child(5) > dd")
                 company_type = company_type_elem.get_text().strip() if company_type_elem else ''
                 logger.info(f'Scraped Company Type: {company_type}')
-
                 company_founded_elem = company_soup.select_one("dl > div:nth-child(6) > dd")
                 company_founded = company_founded_elem.get_text().strip() if company_founded_elem else ''
                 logger.info(f'Scraped Company Founded: {company_founded}')
-
                 company_specialties_elem = company_soup.select_one("dl > div:nth-child(7) > dd")
                 company_specialties = company_specialties_elem.get_text().strip() if company_specialties_elem else ''
                 logger.info(f'Scraped Company Specialties: {company_specialties}')
-
                 company_address = company_headquarters if company_headquarters else location
                 logger.info(f'Set Company Address: {company_address}')
-
             except Exception as e:
                 logger.error(f'Failed to scrape company page {company_url}: {str(e)}')
                 company_website_url = ''
@@ -896,7 +872,16 @@ def scrape_job_details(job_url, auth_headers):
                 company_specialties = ''
                 company_address = location
                 logger.info(f'Using fallback company address: {company_address}')
-
+        else:
+            company_details = LICENSE_MESSAGE
+            company_website_url = LICENSE_MESSAGE
+            company_industry = LICENSE_MESSAGE
+            company_size = LICENSE_MESSAGE
+            company_headquarters = LICENSE_MESSAGE
+            company_type = LICENSE_MESSAGE
+            company_founded = LICENSE_MESSAGE
+            company_specialties = LICENSE_MESSAGE
+            company_address = LICENSE_MESSAGE
         return (
             job_title,
             company_logo,
@@ -925,7 +910,6 @@ def scrape_job_details(job_url, auth_headers):
             final_application_email,
             final_application_url
         )
-
     except Exception as e:
         logger.error(f'Failed to scrape job details from {job_url}: {str(e)}')
         return None
@@ -936,16 +920,13 @@ def main():
         logger.error("Cannot proceed without valid WordPress credentials")
         print("Error: Cannot proceed without valid WordPress credentials")
         return
-
     auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth_headers = {
         "Authorization": f"Basic {base64.b64encode(auth_string.encode()).decode()}"
     }
     logger.debug(f"Created auth headers: Authorization=Basic {'***'}")
-
     processed_ids = load_processed_ids()
     logger.debug(f"Loaded {len(processed_ids)} processed job IDs")
-
     crawl(auth_headers, processed_ids)
 
 if __name__ == "__main__":
