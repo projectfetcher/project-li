@@ -30,9 +30,9 @@ COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')
 FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')
 KEY_LICENSE = os.getenv('KEY_LICENSE', '')
-EXPECTED_KEY = 'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5'
-has_full_access = KEY_LICENSE == EXPECTED_KEY
-logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}, KEY_LICENSE={'***' if KEY_LICENSE else None}, has_full_access={has_full_access}")
+EXPECTED_LICENSE_KEY = 'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5'
+has_license = KEY_LICENSE == EXPECTED_LICENSE_KEY
+logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}, KEY_LICENSE={'***' if KEY_LICENSE else None}, has_license={has_license}")
 # Constants for WordPress
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
 WP_COMPANY_URL = f"{WP_SITE_URL}/wp-json/wp/v2/company"
@@ -209,20 +209,13 @@ def check_existing_job(job_title, company_name, auth_headers):
         logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
         return None, None
 def save_company_to_wordpress(index, company_data, wp_headers):
+    if not has_license:
+        logger.info("No valid license key, skipping saving company")
+        return None, None
     logger.debug(f"Saving company (index={index}): {json.dumps(company_data, indent=2)[:200]}...")
     if check_fetcher_status(wp_headers) != 'running':
         logger.info("Fetcher stopped before saving company")
         return None, None
-    message = '<a href="https://mimusjobs.com/jobfetcher">Get license</a>'
-    if not has_full_access:
-        logger.info("No full access, limiting company data")
-        company_data["company_details"] = message
-        company_data["company_website_url"] = message
-        company_data["company_industry"] = message
-        company_data["company_founded"] = message
-        company_data["company_type"] = message
-        company_data["company_address"] = message
-        company_data["company_logo"] = ''
     company_name = company_data.get("company_name", "")
     company_details = company_data.get("company_details", "")
     company_logo = company_data.get("company_logo", "")
@@ -296,33 +289,6 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     if check_fetcher_status(auth_headers) != 'running':
         logger.info("Fetcher stopped before saving job")
         return None, None
-    message = '<a href="https://mimusjobs.com/jobfetcher">Get license</a>'
-    description_message = '<a href="https://mimusjobs.com/jobfetcher">Get license to access full job description</a>'
-    application_message = '<a href="https://mimusjobs.com/jobfetcher">Get license to access application info</a>'
-    company_message = '<a href="https://mimusjobs.com/jobfetcher">Get license to access company details</a>'
-    if not has_full_access:
-        logger.info("No full access, limiting job data")
-        job_data["job_description"] = description_message
-        job_data["job_salary"] = ''
-        job_data["environment"] = ''
-        job_data["job_functions"] = ''
-        job_data["industries"] = ''
-        job_data["company_details"] = company_message
-        job_data["company_website_url"] = message
-        job_data["company_industry"] = message
-        job_data["company_founded"] = message
-        job_data["company_address"] = message
-        job_data["company_logo"] = ''
-        job_data["description_application_info"] = ''
-        job_data["resolved_application_url"] = ''
-        job_data["application_url"] = ''
-        job_data["final_application_email"] = ''
-        job_data["final_application_url"] = ''
-        job_data["level"] = ''
-        job_data["company_size"] = ''
-        job_data["company_headquarters"] = ''
-        job_data["company_type"] = ''
-        job_data["company_specialties"] = ''
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", "")
     job_type = job_data.get("job_type", "")
@@ -335,6 +301,13 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     company_industry = job_data.get("company_industry", "")
     company_founded = job_data.get("company_founded", "")
    
+    if not has_license:
+        job_description = ''
+        job_salary = ''
+        company_industry = ''
+        company_founded = ''
+        company_logo = ''
+
     job_id = generate_job_id(job_title, company_name)
    
     application = ''
@@ -349,10 +322,11 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         logger.debug(f"Using application URL: {application}")
         if not application:
             logger.warning(f"No valid application email or URL found for job {job_title}")
-    if not has_full_access:
-        application = application_message
+    if not has_license:
+        application = ''
+
     attachment_id = 0
-    if company_logo:
+    if company_logo and has_license:
         logger.debug(f"Uploading job logo: {company_logo}")
         try:
             logo_response = requests.get(company_logo, headers=headers, timeout=10)
@@ -382,12 +356,12 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         "application": sanitize_text(application, is_url=('@' not in application)),
         "company_id": str(company_id) if company_id else "",
         "company_name": sanitize_text(company_name),
-        "company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
+        "company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True) if has_license else '',
         "company_logo": str(attachment_id) if attachment_id else "",
-        "company_tagline": sanitize_text(job_data.get("company_details", "")),
-        "company_address": sanitize_text(job_data.get("company_address", "")),
-        "company_industry": sanitize_text(company_industry),
-        "company_founded": sanitize_text(company_founded),
+        "company_tagline": sanitize_text(job_data.get("company_details", "")) if has_license else '',
+        "company_address": sanitize_text(job_data.get("company_address", "")) if has_license else '',
+        "company_industry": sanitize_text(company_industry) if has_license else '',
+        "company_founded": sanitize_text(company_founded) if has_license else '',
         "company_twitter": "",
         "company_video": ""
     }
@@ -539,28 +513,6 @@ def crawl(auth_headers, processed_ids):
                     "final_application_url": job_data[25],
                     "job_salary": ""
                 }
-                if not has_full_access:
-                    job_dict["job_description"] = '<a href="https://mimusjobs.com/jobfetcher">Get license to access full job description</a>'
-                    job_dict["environment"] = ''
-                    job_dict["level"] = ''
-                    job_dict["job_functions"] = ''
-                    job_dict["industries"] = ''
-                    job_dict["company_details"] = '<a href="https://mimusjobs.com/jobfetcher">Get license to access company details</a>'
-                    job_dict["company_website_url"] = '<a href="https://mimusjobs.com/jobfetcher">Get license</a>'
-                    job_dict["company_industry"] = '<a href="https://mimusjobs.com/jobfetcher">Get license</a>'
-                    job_dict["company_size"] = ''
-                    job_dict["company_headquarters"] = ''
-                    job_dict["company_type"] = '<a href="https://mimusjobs.com/jobfetcher">Get license</a>'
-                    job_dict["company_founded"] = '<a href="https://mimusjobs.com/jobfetcher">Get license</a>'
-                    job_dict["company_specialties"] = ''
-                    job_dict["company_address"] = '<a href="https://mimusjobs.com/jobfetcher">Get license</a>'
-                    job_dict["application_url"] = ''
-                    job_dict["description_application_info"] = ''
-                    job_dict["resolved_application_info"] = ''
-                    job_dict["final_application_email"] = ''
-                    job_dict["final_application_url"] = '<a href="https://mimusjobs.com/jobfetcher">Get license to access application info</a>'
-                    job_dict["job_salary"] = ''
-                    job_dict["company_logo"] = ''
                 logger.debug(f"Job data: {json.dumps(job_dict, indent=2)[:200]}...")
                
                 job_title = job_dict.get("job_title", "Unknown Job")
@@ -585,9 +537,12 @@ def crawl(auth_headers, processed_ids):
                
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
                 if company_id is None:
-                    logger.error(f"Failed to save company for job {job_title}")
-                    failure_count += 1
-                    continue
+                    if has_license:
+                        logger.error(f"Failed to save company for job {job_title}")
+                        failure_count += 1
+                        continue
+                    else:
+                        company_id = ''
                 job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
                 if job_post_id is None:
                     logger.error(f"Failed to save job {job_title}")
@@ -717,9 +672,11 @@ def scrape_job_details(job_url, auth_headers):
             logger.info(f"Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.splitlines())}")
         else:
             logger.warning(f"No job description container found for {job_title}")
+        if not has_license:
+            job_description = ''
         description_application_info = ''
         description_application_url = ''
-        if description_container:
+        if has_license and description_container:
             email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
             emails = re.findall(email_pattern, job_description)
             if emails:
@@ -741,7 +698,7 @@ def scrape_job_details(job_url, auth_headers):
         resolved_application_url = ''
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
         final_application_url = description_application_url if description_application_url else ''
-        if application_url:
+        if has_license and application_url:
             if check_fetcher_status(auth_headers) != 'running':
                 logger.info("Fetcher stopped before following application URL")
                 return None
@@ -789,6 +746,11 @@ def scrape_job_details(job_url, auth_headers):
                 else:
                     final_application_url = description_application_url if description_application_url else application_url or ''
                     logger.warning(f'No external URL found in error, using fallback: {final_application_url}')
+        if not has_license:
+            final_application_email = ''
+            final_application_url = ''
+            description_application_info = ''
+            resolved_application_info = ''
         company_details = ''
         company_website_url = ''
         company_industry = ''
@@ -798,7 +760,7 @@ def scrape_job_details(job_url, auth_headers):
         company_founded = ''
         company_specialties = ''
         company_address = ''
-        if company_url:
+        if has_license and company_url:
             if check_fetcher_status(auth_headers) != 'running':
                 logger.info("Fetcher stopped before fetching company page")
                 return None
@@ -894,6 +856,18 @@ def scrape_job_details(job_url, auth_headers):
                 company_specialties = ''
                 company_address = location
                 logger.info(f'Using fallback company address: {company_address}')
+        else:
+            company_details = ''
+            company_website_url = ''
+            company_industry = ''
+            company_size = ''
+            company_headquarters = ''
+            company_type = ''
+            company_founded = ''
+            company_specialties = ''
+            company_address = location
+        if not has_license:
+            company_logo = ''
         return (
             job_title,
             company_logo,
