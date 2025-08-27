@@ -71,10 +71,15 @@ logger.debug(f"WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_
 def validate_license_key():
     """Validate the FETCHER_TOKEN against the EXPECTED_KEY_TOKEN."""
     logger.debug("Validating license key")
-    if FETCHER_TOKEN == EXPECTED_KEY_TOKEN:
+    if not FETCHER_TOKEN:
+        logger.error("FETCHER_TOKEN is empty or not set in environment variables")
+        return False
+    trimmed_token = FETCHER_TOKEN.strip()
+    logger.debug(f"Comparing FETCHER_TOKEN (trimmed: {'***' if trimmed_token else None}) with EXPECTED_KEY_TOKEN (*** for security)")
+    if trimmed_token == EXPECTED_KEY_TOKEN:
         logger.info("Valid license key provided")
         return True
-    logger.warning("Invalid or missing license key")
+    logger.warning(f"Invalid license key: FETCHER_TOKEN does not match EXPECTED_KEY_TOKEN")
     return False
 
 def fetch_credentials():
@@ -863,7 +868,7 @@ def scrape_job_details(job_url, auth_headers):
             except Exception as e:
                 logger.error(f'Failed to scrape company page {company_url}: {str(e)}')
                 company_website_url = ''
-               company_industry = ''
+                company_industry = ''
                 company_size = ''
                 company_headquarters = ''
                 company_type = ''
