@@ -29,9 +29,17 @@ WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')
 FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')
-KEY_LICENSE = os.getenv('KEY_LICENSE', '')
-EXPECTED_LICENSE_KEY = 'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5'
-has_license = KEY_LICENSE == EXPECTED_LICENSE_KEY
+# Constants
+EXPECTED_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
+KEY_LICENSE = os.getenv('KEY_LICENSE', '').strip()
+
+# Helper: Check if user has full access
+def has_full_access():
+    return KEY_LICENSE == EXPECTED_KEY
+
+# Locked fields replacement
+def locked_field():
+    return "🔒 <a href='https://mimusjobs.com.jobfetcher' target='_blank'>Get License</a>"
 logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}, KEY_LICENSE={'***' if KEY_LICENSE else None}, has_license={has_license}")
 # Constants for WordPress
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
@@ -209,8 +217,9 @@ def check_existing_job(job_title, company_name, auth_headers):
         logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
         return None, None
 def save_company_to_wordpress(index, company_data, wp_headers):
-    if not has_license:
-        logger.info("No valid license key, skipping saving company")
+    # If no license, skip company saving completely
+    if not has_full_access():
+        logger.info("Limited access mode - skipping company details")
         return None, None
     logger.debug(f"Saving company (index={index}): {json.dumps(company_data, indent=2)[:200]}...")
     if check_fetcher_status(wp_headers) != 'running':
@@ -285,9 +294,41 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         logger.error(f"Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
 def save_article_to_wordpress(index, job_data, company_id, auth_headers):
-    logger.debug(f"Saving job (index={index}): {json.dumps(job_data, indent=2)[:200]}...")
-    if check_fetcher_status(auth_headers) != 'running':
-        logger.info("Fetcher stopped before saving job")
+    limited_access = not has_full_access()
+
+    job_id = generate_job_id(job_data.get("job_title", ""), job_data.get("company_name", ""))
+    post_data = {
+        "job_id": job_id,
+        "job_title": sanitize_text(job_data.get("job_title", "")),
+        "job_description": job_data.get("job_description", "") if not limited_access else locked_field(),
+        "featured_media": 0,
+        "job_location": sanitize_text(job_data.get("location", "")),
+        "job_type": sanitize_text(job_data.get("job_type", "")),
+        "job_salary": sanitize_text(job_data.get("job_salary", "")) if not limited_access else locked_field(),
+        "application": sanitize_text(job_data.get("application_url", "")) if not limited_access else locked_field(),
+        "company_name": sanitize_text(job_data.get("company_name", "")),
+        "company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True) if not limited_access else "",
+        "company_logo": str(0),
+        "company_tagline": sanitize_text(job_data.get("company_details", "")) if not limited_access else "",
+        "company_address": sanitize_text(job_data.get("company_address", "")) if not limited_access else "",
+        "company_industry": sanitize_text(job_data.get("company_industry", "")) if not limited_access else "",
+        "company_founded": sanitize_text(job_data.get("company_founded", "")) if not limited_access else "",
+    }
+
+    logger.debug(f"Job post payload: {json.dumps(post_data, indent=2)[:200]}...")
+
+    try:
+        response = requests.post(WP_SAVE_JOB_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
+        response.raise_for_status()
+        res = response.json()
+        if res.get("success"):
+            logger.info(f"Successfully saved job {job_id}")
+            return job_id, f"{WP_SITE_URL}/wp-content/uploads/jobs.json"
+        else:
+            logger.error(f"Failed to save job {job_id}: {res}")
+            return None, None
+    except Exception as e:
+        logger.error(f"Failed to save job {job_id}: {str(e)}")
         return None, None
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", "")
@@ -905,15 +946,15 @@ def main():
         logger.error("Cannot proceed without valid WordPress credentials")
         print("Error: Cannot proceed without valid WordPress credentials")
         return
+
     auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth_headers = {
         "Authorization": f"Basic {base64.b64encode(auth_string.encode()).decode()}"
     }
-    logger.debug(f"Created auth headers: Authorization=Basic {'***'}")
+
     processed_ids = load_processed_ids()
-    logger.debug(f"Loaded {len(processed_ids)} processed job IDs")
     crawl(auth_headers, processed_ids)
+
 if __name__ == "__main__":
-    logger.debug("Script execution started")
     main()
     logger.debug("Script execution completed")
