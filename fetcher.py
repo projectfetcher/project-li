@@ -31,7 +31,7 @@ WP_USERNAME = os.getenv('WP_USERNAME')
 WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')
-FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')
+FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '').strip()
 EXPECTED_KEY_TOKEN = 'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5'
 LICENSE_MESSAGE = 'Get a license at https://mimusjobs.com/jobfetcher to access this data.'
 logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}")
@@ -863,7 +863,7 @@ def scrape_job_details(job_url, auth_headers):
             except Exception as e:
                 logger.error(f'Failed to scrape company page {company_url}: {str(e)}')
                 company_website_url = ''
-                company_industry = ''
+               company_industry = ''
                 company_size = ''
                 company_headquarters = ''
                 company_type = ''
