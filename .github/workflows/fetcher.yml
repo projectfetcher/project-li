@@ -19,6 +19,10 @@ on:
       wp_app_password:
         description: 'WordPress application password for REST API authentication'
         required: true
+      key_license:
+        description: 'License key for the fetcher (optional)'
+        required: false
+        default: ''
 
 jobs:
   fetch-jobs:
@@ -39,10 +43,11 @@ jobs:
 
       - name: Run fetcher
         env:
-          WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
-          WP_USERNAME: ${{ github.event.inputs.wp_username }}
-          WP_APP_PASSWORD: ${{ github.event.inputs.wp_app_password }}
-          COUNTRY: ${{ github.event.inputs.country }}
-          KEYWORD: ${{ github.event.inputs.keyword }}
+          WP_SITE_URL: ${{ inputs.wp_site_url }}
+          WP_USERNAME: ${{ inputs.wp_username }}
+          WP_APP_PASSWORD: ${{ inputs.wp_app_password }}
+          COUNTRY: ${{ inputs.country }}
+          KEYWORD: ${{ inputs.keyword }}
           FETCHER_TOKEN: ${{ secrets.FETCHER_TOKEN }}
+          KEY_LICENSE: ${{ inputs.key_license }}
         run: python fetcher.py
