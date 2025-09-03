@@ -585,7 +585,7 @@ def scrape_job_details(job_url, licensed=False):
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
                 paragraph_count = len(job_description.split('\n\n'))
-logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {paragraph_count}')
+        logger.info(f'Raw Job Description (length): {len(job_description)}')
             else:
                 logger.warning(f"No job description container found for {job_title}")
         else:
