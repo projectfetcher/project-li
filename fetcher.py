@@ -58,14 +58,20 @@ def get_wordpress_credentials():
         response = requests.get(WP_CREDENTIALS_URL, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
+        logger.debug(f"Credentials response: {data}")
         if not data.get('success'):
             logger.error(f"Failed to retrieve credentials: {data.get('message', 'Unknown error')}")
             return None, None, None
         return (
             data.get('wp_username'),
             data.get('wp_app_password'),
-            data.get('license_key')  # Assume plugin returns license_key
+            data.get('license_key')
         )
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP Error retrieving WordPress credentials: {str(e)}")
+        logger.debug(f"Response headers: {e.response.headers}")
+        logger.debug(f"Response body: {e.response.text}")
+        return None, None, None
     except requests.exceptions.RequestException as e:
         logger.error(f"Error retrieving WordPress credentials: {str(e)}")
         return None, None, None
