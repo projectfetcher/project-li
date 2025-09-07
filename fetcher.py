@@ -28,9 +28,8 @@ WP_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/company"
 WP_MEDIA_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/media"
 WP_JOB_TYPE_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_type"
 WP_JOB_REGION_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_region"
-WP_CREDENTIALS_URL = "https://mauritius.mimusjobs.com/wp-json/fetcher/v1/get-credentials"
-WP_CHECK_JOB_URL = "https://mauritius.mimusjobs.com/wp-json/fetcher/v1/check-job"
-EXPECTED_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
+WP_USERNAME = "mary"
+WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"
 PROCESSED_IDS_FILE = "mauritius_processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
 JOB_TYPE_MAPPING = {
@@ -42,6 +41,7 @@ JOB_TYPE_MAPPING = {
     "Internship": "internship",
     "Volunteer": "volunteer"
 }
+
 FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Temps plein": "Full-time",
     "Temps partiel": "Part-time",
@@ -52,29 +52,9 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Bénévolat": "Volunteer"
 }
 
-def get_wordpress_credentials():
-    """Retrieve WordPress credentials and license key from the plugin."""
-    try:
-        response = requests.get(WP_CREDENTIALS_URL, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        logger.debug(f"Credentials response: {data}")
-        if not data.get('success'):
-            logger.error(f"Failed to retrieve credentials: {data.get('message', 'Unknown error')}")
-            return None, None, None
-        return (
-            data.get('wp_username'),
-            data.get('wp_app_password'),
-            data.get('license_key')
-        )
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP Error retrieving WordPress credentials: {str(e)}")
-        logger.debug(f"Response headers: {e.response.headers}")
-        logger.debug(f"Response body: {e.response.text}")
-        return None, None, None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error retrieving WordPress credentials: {str(e)}")
-        return None, None, None
+# Valid license key for full data scraping
+VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
+UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
 
 def sanitize_text(text, is_url=False):
     if not text:
@@ -142,37 +122,30 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
         logger.error(f"Failed to get or create {taxonomy} term {term_name}: {str(e)}")
         return None
 
-def check_existing_job(job_id, auth_headers):
-    """Check if a job with the same ID already exists on WordPress."""
-    check_url = f"{WP_CHECK_JOB_URL}?job_id={job_id}"
+def check_existing_job(job_title, company_name, auth_headers):
+    """Check if a job with the same title and company already exists on WordPress."""
+    check_url = f"{WP_URL}?search={job_title}&meta_key=_company_name&meta_value={company_name}"
     try:
         response = requests.get(check_url, headers=auth_headers, timeout=10)
         response.raise_for_status()
-        result = response.json()
-        if not result.get('success'):
-            logger.info(f"Job not found on WordPress for ID: {job_id}")
-            return None, None
-        logger.info(f"Found existing job on WordPress: ID {job_id}, Post ID: {result.get('id')}")
-        return result.get('id'), result.get('link', '')
+        posts = response.json()
+        if posts:
+            logger.info(f"Found existing job on WordPress: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
+            return posts[0].get('id'), posts[0].get('link')
+        return None, None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing job {job_id}: {str(e)}")
+        logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
         return None, None
 
-def save_company_to_wordpress(index, company_data, wp_headers, license_key):
+def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     company_name = company_data.get("company_name", "")
-    company_details = company_data.get("company_details", "")
-    company_logo = company_data.get("company_logo", "")
-    company_website = company_data.get("company_website_url", "")
-    company_industry = company_data.get("company_industry", "")
-    company_founded = company_data.get("company_founded", "")
-    company_type = company_data.get("company_type", "")
-    company_address = company_data.get("company_address", "")
-    company_id = company_data.get("company_id", generate_job_id(company_name, company_name))
-
-    # Skip if company_details is a license message
-    if company_details == 'Get license: https://mimusjobs.com/job-fetcher':
-        logger.info(f"Skipping company save for {company_name} due to unlicensed access")
-        return None, None
+    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
+    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
+    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
+    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
+    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
+    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
+    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
 
     # Check if company already exists
     check_url = f"{WP_COMPANY_URL}?search={company_name}"
@@ -188,7 +161,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, license_key):
         logger.error(f"Failed to check existing company {company_name}: {str(e)}")
 
     attachment_id = 0
-    if company_logo and company_logo != 'Get license: https://mimusjobs.com/job-fetcher':
+    if licensed and company_logo and company_logo != UNLICENSED_MESSAGE:
         try:
             logo_response = requests.get(company_logo, headers=headers, timeout=10)
             logo_response.raise_for_status()
@@ -210,7 +183,6 @@ def save_company_to_wordpress(index, company_data, wp_headers, license_key):
         "status": "publish",
         "featured_media": attachment_id,
         "meta": {
-            "_company_id": company_id,
             "_company_name": sanitize_text(company_name),
             "_company_logo": str(attachment_id) if attachment_id else "",
             "_company_website": sanitize_text(company_website, is_url=True),
@@ -221,8 +193,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, license_key):
             "_company_tagline": sanitize_text(company_details),
             "_company_twitter": "",
             "_company_video": ""
-        },
-        "license_key": license_key  # Include license key for validation
+        }
     }
     response = None
     try:
@@ -235,22 +206,21 @@ def save_company_to_wordpress(index, company_data, wp_headers, license_key):
         logger.error(f"Failed to post company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
 
-def save_article_to_wordpress(index, job_data, company_id, auth_headers, license_key):
+def save_article_to_wordpress(index, job_data, company_id, auth_headers, licensed):
     job_title = job_data.get("job_title", "")
-    job_description = job_data.get("job_description", "")
+    job_description = job_data.get("job_description", UNLICENSED_MESSAGE if not licensed else "")
     job_type = job_data.get("job_type", "")
     location = job_data.get("location", "Mauritius")
     job_url = job_data.get("job_url", "")
     company_name = job_data.get("company_name", "")
-    company_logo = job_data.get("company_logo", "")
-    environment = job_data.get("environment", "").lower()
+    company_logo = job_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
+    environment = job_data.get("environment", UNLICENSED_MESSAGE if not licensed else "").lower()
     job_salary = job_data.get("job_salary", "")
-    company_industry = job_data.get("company_industry", "")
-    company_founded = job_data.get("company_founded", "")
-    job_id = job_data.get("job_id", generate_job_id(job_title, company_name))
+    company_industry = job_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
+    company_founded = job_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
 
     # Check if job already exists on WordPress
-    existing_post_id, existing_post_url = check_existing_job(job_id, auth_headers)
+    existing_post_id, existing_post_url = check_existing_job(job_title, company_name, auth_headers)
     if existing_post_id:
         logger.info(f"Skipping duplicate job: {job_title} at {company_name}, already posted with Post ID: {existing_post_id}")
         print(f"Job '{job_title}' at {company_name} skipped - already posted on WordPress. Post ID: {existing_post_id}, URL: {existing_post_url}")
@@ -267,7 +237,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
             logger.warning(f"No valid application email or URL found for job {job_title}")
 
     attachment_id = 0
-    if company_logo and company_logo != 'Get license: https://mimusjobs.com/job-fetcher':
+    if licensed and company_logo and company_logo != UNLICENSED_MESSAGE:
         try:
             logo_response = requests.get(company_logo, headers=headers, timeout=10)
             logo_response.raise_for_status()
@@ -289,7 +259,6 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
         "status": "publish",
         "featured_media": attachment_id,
         "meta": {
-            "_job_id": job_id,
             "_job_title": sanitize_text(job_title),
             "_job_location": sanitize_text(location),
             "_job_type": sanitize_text(job_type),
@@ -298,18 +267,17 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
             "_application": sanitize_text(application, is_url=('@' not in application)),
             "_company_id": str(company_id) if company_id else "",
             "_company_name": sanitize_text(company_name),
-            "_company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
+            "_company_website": sanitize_text(job_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else ""), is_url=True),
             "_company_logo": str(attachment_id) if attachment_id else "",
-            "_company_tagline": sanitize_text(job_data.get("company_details", "")),
-            "_company_address": sanitize_text(job_data.get("company_address", "")),
+            "_company_tagline": sanitize_text(job_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")),
+            "_company_address": sanitize_text(job_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")),
             "_company_industry": sanitize_text(company_industry),
             "_company_founded": sanitize_text(company_founded),
             "_company_twitter": "",
             "_company_video": ""
         },
         "job_listing_type": [job_type_id] if (job_type_id := get_or_create_term(job_type, "job_type", WP_JOB_TYPE_URL, auth_headers)) else [],
-        "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else [],
-        "license_key": license_key  # Include license key for validation
+        "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else []
     }
     
     logger.info(f"Final job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
@@ -366,13 +334,7 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
-def crawl(auth_headers, processed_ids, license_key):
-    licensed = license_key == EXPECTED_LICENSE_KEY
-    if licensed:
-        logger.info("License key validated successfully. Full data access enabled.")
-    else:
-        logger.warning("Invalid or missing license key. Limited data access mode enabled.")
-    
+def crawl(auth_headers, processed_ids, licensed):
     success_count = 0
     failure_count = 0
     total_jobs = 0
@@ -409,7 +371,6 @@ def crawl(auth_headers, processed_ids, license_key):
                     continue
                 
                 job_dict = {
-                    "job_id": generate_job_id(job_data[0], job_data[2]),
                     "job_title": job_data[0],
                     "company_logo": job_data[1],
                     "company_name": job_data[2],
@@ -437,13 +398,13 @@ def crawl(auth_headers, processed_ids, license_key):
                     "final_application_email": job_data[24],
                     "final_application_url": job_data[25],
                     "resolved_application_url": job_data[26],
-                    "job_salary": "",
-                    "company_id": generate_job_id(job_data[2], job_data[2])
+                    "job_salary": ""
                 }
                 
                 job_title = job_dict.get("job_title", "Unknown Job")
                 company_name = job_dict.get("company_name", "")
-                job_id = job_dict.get("job_id")
+                
+                job_id = generate_job_id(job_title, company_name)
                 
                 if job_id in processed_ids:
                     logger.info(f"Skipping already processed job: {job_id} ({job_title} at {company_name})")
@@ -460,8 +421,8 @@ def crawl(auth_headers, processed_ids, license_key):
                 
                 total_jobs += 1
                 
-                company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers, license_key)
-                job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers, license_key)
+                company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers, licensed)
+                job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers, licensed)
                 
                 if job_post_id:
                     processed_ids.add(job_id)
@@ -474,6 +435,7 @@ def crawl(auth_headers, processed_ids, license_key):
                     failure_count += 1
             
             save_last_page(i + 1)
+            
         except Exception as e:
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
             failure_count += 1
@@ -483,8 +445,7 @@ def crawl(auth_headers, processed_ids, license_key):
     print(f"Successfully posted: {success_count}")
     print(f"Failed to post or scrape: {failure_count}")
 
-def scrape_job_details(job_url, licensed=False):
-    message = 'Get license: https://mimusjobs.com/job-fetcher'
+def scrape_job_details(job_url, licensed):
     logger.info(f'Fetching job details from: {job_url}')
     try:
         session = requests.Session()
@@ -504,22 +465,23 @@ def scrape_job_details(job_url, licensed=False):
             company_logo = (company_logo_elem.get('data-delayed-url') or company_logo_elem.get('src') or '') if company_logo_elem else ''
             logger.info(f'Scraped Company Logo URL: {company_logo}')
         else:
-            company_logo = message
+            company_logo = UNLICENSED_MESSAGE
 
         company_name = soup.select_one(".topcard__org-name-link")
         company_name = company_name.get_text().strip() if company_name else ''
         logger.info(f'Scraped Company Name: {company_name}')
 
-        company_url_scraped = ''
+        company_url = ''
         if licensed:
             company_url_elem = soup.select_one(".topcard__org-name-link")
-            company_url_scraped = company_url_elem['href'] if company_url_elem and company_url_elem.get('href') else ''
-            if company_url_scraped:
-                company_url_scraped = re.sub(r'\?.*$', '', company_url_scraped)
-                logger.info(f'Scraped Company URL: {company_url_scraped}')
+            company_url = company_url_elem['href'] if company_url_elem and company_url_elem.get('href') else ''
+            if company_url:
+                company_url = re.sub(r'\?.*$', '', company_url)
+                logger.info(f'Scraped Company URL: {company_url}')
             else:
                 logger.info('No Company URL found')
-        company_url = company_url_scraped if licensed else message
+        else:
+            company_url = UNLICENSED_MESSAGE
 
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
         location = location.get_text().strip() if location else 'Mauritius'
@@ -537,7 +499,7 @@ def scrape_job_details(job_url, licensed=False):
                     break
             logger.info(f'Scraped Environment: {environment}')
         else:
-            environment = message
+            environment = UNLICENSED_MESSAGE
 
         job_type_elem = soup.select_one(".description__job-criteria-list > li:nth-child(2) > span")
         job_type = job_type_elem.get_text().strip() if job_type_elem else ''
@@ -550,7 +512,7 @@ def scrape_job_details(job_url, licensed=False):
             level = level_elem.get_text().strip() if level_elem else ''
             logger.info(f'Scraped Level: {level}')
         else:
-            level = message
+            level = UNLICENSED_MESSAGE
 
         job_functions = ''
         if licensed:
@@ -558,7 +520,7 @@ def scrape_job_details(job_url, licensed=False):
             job_functions = job_functions_elem.get_text().strip() if job_functions_elem else ''
             logger.info(f'Scraped Job Functions: {job_functions}')
         else:
-            job_functions = message
+            job_functions = UNLICENSED_MESSAGE
 
         industries = ''
         if licensed:
@@ -566,7 +528,7 @@ def scrape_job_details(job_url, licensed=False):
             industries = industries_elem.get_text().strip() if industries_elem else ''
             logger.info(f'Scraped Industries: {industries}')
         else:
-            industries = message
+            industries = UNLICENSED_MESSAGE
 
         job_description = ''
         if licensed:
@@ -605,49 +567,48 @@ def scrape_job_details(job_url, licensed=False):
                         elif norm_para:
                             logger.info(f"Removed duplicate paragraph in job description for {job_title}: {para[:50]}...")
                     job_description = '\n\n'.join(unique_paragraphs)
-                logger.info(f'Raw Job Description (length): {len(job_description)}')
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
-                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split(delimiter))}')
+                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}')
             else:
                 logger.warning(f"No job description container found for {job_title}")
         else:
-            job_description = message
+            job_description = UNLICENSED_MESSAGE
 
         description_application_info = ''
         description_application_url = ''
-        if licensed:
-            if description_container:
-                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                emails = re.findall(email_pattern, job_description)
-                if emails:
-                    description_application_info = emails[0]
-                    logger.info(f'Found email in job description: {description_application_info}')
-                else:
-                    links = description_container.find_all('a', href=True)
-                    for link in links:
-                        href = link['href']
-                        if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                            description_application_url = href
-                            description_application_info = href
-                            logger.info(f'Found application link in job description: {description_application_info}')
-                            break
+        if licensed and job_description and job_description != UNLICENSED_MESSAGE:
+            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+            emails = re.findall(email_pattern, job_description)
+            if emails:
+                description_application_info = emails[0]
+                logger.info(f'Found email in job description: {description_application_info}')
+            else:
+                links = description_container.find_all('a', href=True)
+                for link in links:
+                    href = link['href']
+                    if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
+                        description_application_url = href
+                        description_application_info = href
+                        logger.info(f'Found application link in job description: {description_application_info}')
+                        break
         else:
-            description_application_info = message
+            description_application_info = UNLICENSED_MESSAGE
 
-        application_url_scraped = ''
+        application_url = ''
         if licensed:
             application_anchor = soup.select_one("#teriary-cta-container > div > a")
-            application_url_scraped = application_anchor['href'] if application_anchor and application_anchor.get('href') else None
-            logger.info(f'Scraped Application URL: {application_url_scraped}')
-        application_url = application_url_scraped if licensed else message
+            application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
+            logger.info(f'Scraped Application URL: {application_url}')
+        else:
+            application_url = UNLICENSED_MESSAGE
 
         resolved_application_info = ''
         resolved_application_url = ''
-        if licensed and application_url_scraped:
+        if licensed and application_url and application_url != UNLICENSED_MESSAGE:
             try:
                 time.sleep(5)
-                resp_app = session.get(application_url_scraped, headers=headers, timeout=15, allow_redirects=True)
+                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True)
                 resolved_application_url = resp_app.url
                 logger.info(f'Resolved Application URL: {resolved_application_url}')
                 
@@ -674,11 +635,11 @@ def scrape_job_details(job_url, licensed=False):
                     resolved_application_url = f"https://{external_url}"
                     logger.info(f'Extracted external URL from error for application: {resolved_application_url}')
                 else:
-                    resolved_application_url = description_application_url if description_application_url else application_url_scraped or ''
+                    resolved_application_url = description_application_url if description_application_url else application_url
                     logger.warning(f'No external URL found in error, using fallback: {resolved_application_url}')
         else:
-            resolved_application_info = message
-            resolved_application_url = message
+            resolved_application_info = UNLICENSED_MESSAGE
+            resolved_application_url = UNLICENSED_MESSAGE
 
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
         final_application_url = description_application_url if description_application_url else ''
@@ -693,8 +654,8 @@ def scrape_job_details(job_url, licensed=False):
             elif resolved_application_url:
                 final_application_url = resolved_application_url
         else:
-            final_application_email = message
-            final_application_url = message
+            final_application_email = UNLICENSED_MESSAGE
+            final_application_url = UNLICENSED_MESSAGE
 
         company_details = ''
         company_website_url = ''
@@ -706,10 +667,10 @@ def scrape_job_details(job_url, licensed=False):
         company_specialties = ''
         company_address = ''
 
-        if licensed and company_url_scraped:
-            logger.info(f'Fetching company page: {company_url_scraped}')
+        if licensed and company_url and company_url != UNLICENSED_MESSAGE:
+            logger.info(f'Fetching company page: {company_url}')
             try:
-                company_response = session.get(company_url_scraped, headers=headers, timeout=15)
+                company_response = session.get(company_url, headers=headers, timeout=15)
                 company_response.raise_for_status()
                 company_soup = BeautifulSoup(company_response.text, 'html.parser')
 
@@ -806,20 +767,17 @@ def scrape_job_details(job_url, licensed=False):
                 company_address = company_address.get_text().strip() if company_address else company_headquarters
                 logger.info(f'Scraped Company Address: {company_address}')
             except Exception as e:
-                logger.error(f'Error fetching company page: {company_url_scraped} - {str(e)}')
+                logger.error(f'Error fetching company page: {company_url} - {str(e)}')
         else:
-            logger.info('No company URL or unlicensed, skipping company details scrape')
-
-        if not licensed:
-            company_details = message
-            company_website_url = message
-            company_industry = message
-            company_size = message
-            company_headquarters = message
-            company_type = message
-            company_founded = message
-            company_specialties = message
-            company_address = message
+            company_details = UNLICENSED_MESSAGE
+            company_website_url = UNLICENSED_MESSAGE
+            company_industry = UNLICENSED_MESSAGE
+            company_size = UNLICENSED_MESSAGE
+            company_headquarters = UNLICENSED_MESSAGE
+            company_type = UNLICENSED_MESSAGE
+            company_founded = UNLICENSED_MESSAGE
+            company_specialties = UNLICENSED_MESSAGE
+            company_address = UNLICENSED_MESSAGE
 
         row = [
             job_title,
@@ -858,23 +816,18 @@ def scrape_job_details(job_url, licensed=False):
         return None
 
 def main():
-    # Retrieve credentials and license key from WordPress
-    wp_username, wp_app_password, license_key = get_wordpress_credentials()
+    # Check license key from command-line argument
+    license_key = sys.argv[1] if len(sys.argv) > 1 else ""
+    licensed = license_key == VALID_LICENSE_KEY
     
-    if not wp_username or not wp_app_password:
-        logger.error("Failed to retrieve WordPress credentials. Exiting.")
-        print("Error: Could not retrieve WordPress credentials. Please check the WordPress plugin settings.")
-        sys.exit(1)
-    
-    # Validate license key
-    if license_key == EXPECTED_LICENSE_KEY:
-        logger.info("License key validated successfully. Running in full mode.")
+    if not licensed:
+        logger.warning("No valid license key provided. Scraping limited data.")
+        print("Warning: No valid license key provided. Only basic job data (title, company name, location, job type, job URL) will be scraped.")
     else:
-        logger.warning(f"Invalid license key: {license_key or 'None'}. Running in limited mode.")
-        license_key = ''  # Clear invalid license key
-    
-    # Set up WordPress authentication headers
-    auth_string = f"{wp_username}:{wp_app_password}"
+        logger.info("Valid license key provided. Scraping full job data.")
+        print("Valid license key provided. Scraping full job data.")
+
+    auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
         "Authorization": f"Basic {auth}",
@@ -882,7 +835,7 @@ def main():
     }
     
     processed_ids = load_processed_ids()
-    crawl(auth_headers=wp_headers, processed_ids=processed_ids, license_key=license_key)
+    crawl(auth_headers=wp_headers, processed_ids=processed_ids, licensed=licensed)
 
 if __name__ == "__main__":
     main()
