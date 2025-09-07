@@ -1,4 +1,5 @@
 name: Job Fetcher
+
 on:
   workflow_dispatch:
     inputs:
@@ -18,20 +19,28 @@ on:
       wp_app_password:
         description: 'WordPress application password for REST API authentication'
         required: true
+      license_key:
+        description: 'License key for fetcher.py (optional)'
+        required: false
+        default: ''
+
 jobs:
   fetch-jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 urllib3
+
       - name: Run fetcher
         env:
           WP_SITE_URL: ${{ inputs.wp_site_url }}
@@ -39,6 +48,4 @@ jobs:
           WP_APP_PASSWORD: ${{ inputs.wp_app_password }}
           COUNTRY: ${{ inputs.country }}
           KEYWORD: ${{ inputs.keyword }}
-          FETCHER_TOKEN: ${{ secrets.FETCHER_TOKEN }}
-          KEY_LICENSE: ${{ secrets.KEY_LICENSE }}
-        run: python fetcher.py
+        run: python fetcher.py "${{ inputs.license_key }}"
