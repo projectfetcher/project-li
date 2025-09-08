@@ -438,6 +438,8 @@ def crawl(auth_headers, processed_ids, licensed):
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("ul.jobs-search__results-list > li a")
             urls = [a['href'] for a in job_list if a.get('href')]
+            # Filter to only job detail URLs
+            urls = [u for u in urls if '/jobs/view/' in u]
             logger.info(f"crawl: Found {len(urls)} job URLs on page {i}: {urls}")
             if not urls:
                 logger.warning(f"crawl: No job URLs found on page {i}. Possible selector issue or no jobs available.")
@@ -668,7 +670,7 @@ def scrape_job_details(job_url, licensed):
                     job_description = '\n\n'.join(unique_paragraphs)
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
-                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split(delimiter))}')
+                logger.info(f"scrape_job_details: Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split(delimiter))}')
             else:
                 logger.warning(f"scrape_job_details: No job description container found for {job_title}")
         else:
