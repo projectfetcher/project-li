@@ -207,15 +207,13 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     check_url = f"{WP_COMPANY_URL}?search={company_name}"
     logger.debug(f"save_company_to_wordpress: Checking existing company at URL='{check_url}'")
     try:
-        response = requests.get(check_url, headers=wp_headers, timeout=10)
-        logger.debug(f"save_company_to_wordpress: GET response status={response.status_code}, headers={response.headers}")
-        response.raise_for_status()
-        posts = response.json()
-        logger.debug(f"save_company_to_wordpress: Found {len(posts)} existing companies")
-        if posts:
-            post = posts[0]
-            logger.info(f"save_company_to_wordpress: Found existing company {company_name}: Post ID {post.get('id')}, URL {post.get('link')}")
-            return post.get("id"), post.get("link")
+        response = requests.get(check_url, headers=wp_headers, timeout=10, verify=False)
+        if response.status_code == 200:
+            posts = response.json()
+            for post in posts:
+                if post['title']['rendered'].lower() == company_name.lower():
+                    logger.info(f"Company {company_name} already exists: Post ID {post.get('id')}, URL {post.get('link')}")
+                    return post.get("id"), post.get("link")
     except requests.exceptions.RequestException as e:
         logger.error(f"save_company_to_wordpress: Failed to check existing company {company_name}: {str(e)}", exc_info=True)
 
@@ -259,6 +257,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
         }
     }
     logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
+    response = None
     try:
         response = requests.post(WP_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15)
         logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
@@ -285,12 +284,19 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     company_founded = job_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
     logger.debug(f"save_article_to_wordpress: Extracted job fields: title='{job_title}', description='{job_description[:50]}...', type='{job_type}', location='{location}', url='{job_url}', company='{company_name}', logo='{company_logo}', environment='{environment}', salary='{job_salary}', industry='{company_industry}', founded='{company_founded}'")
 
-    # Check if job already exists on WordPress
-    existing_post_id, existing_post_url = check_existing_job(job_title, company_name, auth_headers)
-    if existing_post_id:
-        logger.info(f"save_article_to_wordpress: Skipping duplicate job: {job_title} at {company_name}, Post ID: {existing_post_id}, URL: {existing_post_url}")
-        print(f"Job '{job_title}' at {company_name} skipped - already posted on WordPress. Post ID: {existing_post_id}, URL: {existing_post_url}")
-        return existing_post_id, existing_post_url
+     # Check if job already exists to avoid duplicates
+    job_id = hashlib.md5(job_url.encode()).hexdigest()[:16]
+    check_url = f"{WP_URL}?search={sanitize_text(job_title)}"
+    try:
+        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
+        if response.status_code == 200:
+            posts = response.json()
+            for post in posts:
+                if post['meta']['_job_title'].lower() == sanitize_text(job_title).lower() and post['meta']['_company_name'].lower() == sanitize_text(company_name).lower():
+                    logger.info(f"Job {job_title} from {company_name} already exists: Post ID {post.get('id')}, URL {post.get('link')}")
+                    return post.get("id"), post.get("link")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to check for existing job {job_title}: {str(e)}")
 
     application = ''
     if '@' in job_data.get("description_application_info", ""):
