@@ -193,7 +193,7 @@ def check_existing_job(job_title, company_name, auth_headers):
 
 def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
-    company_name = company_data.get("company_name", "")
+    company_name = company_data.get("company_name", "Unknown Company")  # Default if empty
     company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
     company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
     company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
@@ -272,12 +272,12 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
 
 def save_article_to_wordpress(index, job_data, company_id, auth_headers, licensed):
     logger.debug(f"save_article_to_wordpress called with index={index}, job_data={json.dumps(job_data, indent=2)[:200]}..., company_id={company_id}, licensed={licensed}")
-    job_title = job_data.get("job_title", "")
+    job_title = job_data.get("job_title", "Unknown Job")  # Default if empty
     job_description = job_data.get("job_description", UNLICENSED_MESSAGE if not licensed else "")
     job_type = job_data.get("job_type", "")
     location = job_data.get("location", "Mauritius")
     job_url = job_data.get("job_url", "")
-    company_name = job_data.get("company_name", "")
+    company_name = job_data.get("company_name", "Unknown Company")  # Default if empty
     company_logo = job_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
     environment = job_data.get("environment", UNLICENSED_MESSAGE if not licensed else "").lower()
     job_salary = job_data.get("job_salary", "")
@@ -437,7 +437,7 @@ def crawl(auth_headers, processed_ids, licensed):
                 break
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("ul.jobs-search__results-list > li a")
-            urls = [a['href'] for a in job_list if a.get('href')]
+            urls = [a['href'] for a in job_list if a.get('href') and '/jobs/view/' in a['href']]  # Filter only job view URLs
             logger.info(f"crawl: Found {len(urls)} job URLs on page {i}: {urls}")
             if not urls:
                 logger.warning(f"crawl: No job URLs found on page {i}. Possible selector issue or no jobs available.")
@@ -485,7 +485,7 @@ def crawl(auth_headers, processed_ids, licensed):
                 logger.debug(f"crawl: Constructed job_dict={json.dumps(job_dict, indent=2)[:200]}...")
                 
                 job_title = job_dict.get("job_title", "Unknown Job")
-                company_name = job_dict.get("company_name", "")
+                company_name = job_dict.get("company_name", "Unknown Company")
                 
                 job_id = generate_job_id(job_title, company_name)
                 logger.debug(f"crawl: Generated job_id={job_id} for job_title='{job_title}', company_name='{company_name}'")
@@ -496,12 +496,7 @@ def crawl(auth_headers, processed_ids, licensed):
                     total_jobs += 1
                     continue
                 
-                if not company_name or company_name.lower() == "unknown":
-                    logger.info(f"crawl: Skipping job with unknown company: {job_title} (ID: {job_id})")
-                    print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
-                    failure_count += 1
-                    total_jobs += 1
-                    continue
+                # Removed skip for unknown company
                 
                 total_jobs += 1
                 
@@ -545,7 +540,7 @@ def scrape_job_details(job_url, licensed):
         soup = BeautifulSoup(response.text, 'html.parser')
 
         job_title = soup.select_one("h1.top-card-layout__title")
-        job_title = job_title.get_text().strip() if job_title else ''
+        job_title = job_title.get_text().strip() if job_title else 'Unknown Job'
         logger.info(f"scrape_job_details: Scraped Job Title: {job_title}")
 
         company_logo = ''
@@ -558,7 +553,7 @@ def scrape_job_details(job_url, licensed):
             logger.debug(f"scrape_job_details: Unlicensed, set company_logo={UNLICENSED_MESSAGE}")
 
         company_name = soup.select_one(".topcard__org-name-link")
-        company_name = company_name.get_text().strip() if company_name else ''
+        company_name = company_name.get_text().strip() if company_name else 'Unknown Company'
         logger.info(f"scrape_job_details: Scraped Company Name: {company_name}")
 
         company_url = ''
