@@ -160,7 +160,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     response = None
     try:
         response = requests.post(WP_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15)
-        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
+        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}...")
         response.raise_for_status()
         post = response.json()
         if post['success']:
@@ -222,7 +222,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     logger.info(f"save_article_to_wordpress: Final job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
     try:
         response = requests.post(WP_JOB_URL, json=post_data, headers=auth_headers, timeout=15)
-        logger.debug(f"save_article_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
+        logger.debug(f"save_article_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}...")
         response.raise_for_status()
         post = response.json()
         if post['success']:
@@ -377,6 +377,10 @@ def crawl(auth_headers, licensed, country, keyword):
 
 def scrape_job_details(job_url, licensed):
     logger.debug(f"scrape_job_details called with job_url={job_url}, licensed={licensed}")
+    # Skip company pages early
+    if '/company/' in job_url:
+        logger.warning(f"scrape_job_details: Skipping company page URL: {job_url}")
+        return None
     try:
         session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
@@ -389,6 +393,9 @@ def scrape_job_details(job_url, licensed):
         job_title = soup.select_one("h1.top-card-layout__title")
         job_title = job_title.get_text().strip() if job_title else ''
         logger.info(f"scrape_job_details: Scraped Job Title: {job_title}")
+        if not job_title:
+            logger.warning(f"scrape_job_details: No job title found for {job_url}, skipping")
+            return None
         company_logo = ''
         if licensed:
             company_logo_elem = soup.select_one("div.top-card-layout__entity-info-container a img")
@@ -400,6 +407,9 @@ def scrape_job_details(job_url, licensed):
         company_name = soup.select_one(".topcard__org-name-link")
         company_name = company_name.get_text().strip() if company_name else ''
         logger.info(f"scrape_job_details: Scraped Company Name: {company_name}")
+        if not company_name:
+            logger.warning(f"scrape_job_details: No company name found for {job_url}, skipping")
+            return None
         company_url = ''
         if licensed:
             company_url_elem = soup.select_one(".topcard__org-name-link")
@@ -485,8 +495,8 @@ def scrape_job_details(job_url, licensed):
                     seen = set()
                     unique_paragraphs = []
                     logger.debug(f"scrape_job_details: Raw text paragraphs for {job_title}: {[sanitize_text(para)[:50] for para in paragraphs]}")
-                    for para in paragraphs:
-                        para = sanitize_text(para)
+                    for p in paragraphs:
+                        para = sanitize_text(p)
                         if not para:
                             logger.debug(f"scrape_job_details: Skipping empty paragraph for {job_title}")
                             continue
@@ -500,7 +510,6 @@ def scrape_job_details(job_url, licensed):
                     job_description = '\n\n'.join(unique_paragraphs)
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
-                #logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {job_description.count('\n\n') + 1}')
             else:
                 logger.warning(f"scrape_job_details: No job description container found for {job_title}")
         else:
