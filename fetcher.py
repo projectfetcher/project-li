@@ -267,7 +267,12 @@ def crawl(auth_headers, licensed, country, keyword):
     pages_to_scrape = 10
     logger.debug(f"crawl: Starting from page {start_page}, scraping {pages_to_scrape} pages")
     for i in range(start_page, start_page + pages_to_scrape):
-        url = f'https://www.linkedin.com/jobs/search?keywords={keyword}&location={country}&start={i * 25}'
+        # Construct LinkedIn search URL dynamically based on whether keyword is provided
+        base_url = f'https://www.linkedin.com/jobs/search?location={country}&start={i * 25}'
+        if keyword:
+            url = f'{base_url}&keywords={keyword}'
+        else:
+            url = base_url
         logger.info(f"crawl: Fetching job search page: {url}")
         time.sleep(random.uniform(5, 10))
         try:
@@ -495,7 +500,7 @@ def scrape_job_details(job_url, licensed):
                     job_description = '\n\n'.join(unique_paragraphs)
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
-                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split(delimiter))}')
+                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {job_description.count('\n\n') + 1}')
             else:
                 logger.warning(f"scrape_job_details: No job description container found for {job_title}")
         else:
@@ -758,10 +763,6 @@ def main():
     if not country:
         logger.error("main: No country provided. Please specify a country in the plugin settings.")
         print("Error: No country provided. Please specify a country in the plugin settings.")
-        sys.exit(1)
-    if not keyword:
-        logger.error("main: No keyword provided. Please specify a keyword in the plugin settings.")
-        print("Error: No keyword provided. Please specify a keyword in the plugin settings.")
         sys.exit(1)
     licensed = license_key == VALID_LICENSE_KEY
     if not licensed:
