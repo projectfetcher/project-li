@@ -12,10 +12,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
 import sys
-import traceback
-# Create uploads directory if it doesn't exist
-os.makedirs("uploads", exist_ok=True)
-
 # Configure logging with verbose output
 logging.basicConfig(
     level=logging.DEBUG,
@@ -26,6 +22,8 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+# Create uploads directory if it doesn't exist
+os.makedirs("uploads", exist_ok=True)
 # HTTP headers for scraping
 headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
@@ -34,9 +32,8 @@ logger.debug(f"Initialized HTTP headers: {headers}")
 # Constants for WordPress - dynamic from args
 WP_USERNAME = "mary"  # default
 WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"  # default
-PROCESSED_IDS_FILE = os.path.join("uploads", "processed_job_ids.json")
 LAST_PAGE_FILE = os.path.join("uploads", "last_processed_page.txt")
-logger.debug(f"File paths: PROCESSED_IDS_FILE={PROCESSED_IDS_FILE}, LAST_PAGE_FILE={LAST_PAGE_FILE}")
+logger.debug(f"File paths: LAST_PAGE_FILE={LAST_PAGE_FILE}")
 JOB_TYPE_MAPPING = {
     "Full-time": "full-time",
     "Part-time": "part-time",
@@ -171,7 +168,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", UNLICENSED_MESSAGE if not licensed else "")
     job_type = job_data.get("job_type", "")
-    location = job_data.get("location", "Mauritius")
+    location = job_data.get("location", "")
     job_url = job_data.get("job_url", "")
     company_name = job_data.get("company_name", "")
     company_logo = job_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
@@ -227,28 +224,6 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     except requests.exceptions.RequestException as e:
         logger.error(f"save_article_to_wordpress: Failed to save job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
         return None, None
-def load_processed_ids():
-    logger.debug(f"load_processed_ids called for file={PROCESSED_IDS_FILE}")
-    processed_ids = set()
-    try:
-        if os.path.exists(PROCESSED_IDS_FILE):
-            with open(PROCESSED_IDS_FILE, "r") as f:
-                processed_ids = set(json.load(f))
-            logger.info(f"load_processed_ids: Loaded {len(processed_ids)} processed job IDs from {PROCESSED_IDS_FILE}")
-        else:
-            logger.debug(f"load_processed_ids: File {PROCESSED_IDS_FILE} does not exist")
-    except Exception as e:
-        logger.error(f"load_processed_ids: Failed to load processed IDs from {PROCESSED_IDS_FILE}: {str(e)}", exc_info=True)
-    logger.debug(f"load_processed_ids: Returning {len(processed_ids)} IDs")
-    return processed_ids
-def save_processed_ids(processed_ids):
-    logger.debug(f"save_processed_ids called with {len(processed_ids)} IDs")
-    try:
-        with open(PROCESSED_IDS_FILE, "w") as f:
-            json.dump(list(processed_ids), f)
-        logger.info(f"save_processed_ids: Saved {len(processed_ids)} job IDs to {PROCESSED_IDS_FILE}")
-    except Exception as e:
-        logger.error(f"save_processed_ids: Failed to save processed IDs to {PROCESSED_IDS_FILE}: {str(e)}", exc_info=True)
 def load_last_page():
     logger.debug(f"load_last_page called for file={LAST_PAGE_FILE}")
     try:
@@ -270,15 +245,14 @@ def save_last_page(page):
         logger.info(f"save_last_page: Saved last processed page: {page} to {LAST_PAGE_FILE}")
     except Exception as e:
         logger.error(f"save_last_page: Failed to save last page to {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
-def crawl(auth_headers, processed_ids, licensed, country, keyword):
-    logger.debug(f"crawl called with processed_ids_count={len(processed_ids)}, licensed={licensed}, country={country}, keyword={keyword}")
+def crawl(auth_headers, licensed, country, keyword):
+    logger.debug(f"crawl called with licensed={licensed}, country={country}, keyword={keyword}")
     success_count = 0
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
     pages_to_scrape = 10
     logger.debug(f"crawl: Starting from page {start_page}, scraping {pages_to_scrape} pages")
-   
     for i in range(start_page, start_page + pages_to_scrape):
         url = f'https://www.linkedin.com/jobs/search?keywords={keyword}&location={country}&start={i * 25}'
         logger.info(f"crawl: Fetching job search page: {url}")
@@ -300,7 +274,6 @@ def crawl(auth_headers, processed_ids, licensed, country, keyword):
             logger.info(f"crawl: Found {len(urls)} job URLs on page {i}: {urls}")
             if not urls:
                 logger.warning(f"crawl: No job URLs found on page {i}. Possible selector issue or no jobs available.")
-           
             for index, job_url in enumerate(urls):
                 logger.debug(f"crawl: Processing job {index + 1}/{len(urls)}: {job_url}")
                 job_data = scrape_job_details(job_url, licensed)
@@ -310,7 +283,6 @@ def crawl(auth_headers, processed_ids, licensed, country, keyword):
                     failure_count += 1
                     total_jobs += 1
                     continue
-               
                 job_dict = {
                     "job_title": job_data[0],
                     "company_logo": job_data[1],
@@ -342,52 +314,43 @@ def crawl(auth_headers, processed_ids, licensed, country, keyword):
                     "job_salary": ""
                 }
                 logger.debug(f"crawl: Constructed job_dict={json.dumps(job_dict, indent=2)[:200]}...")
-               
                 job_title = job_dict.get("job_title", "Unknown Job")
                 company_name = job_dict.get("company_name", "")
-               
                 job_id = generate_id(f"{job_title}_{company_name}")
                 logger.debug(f"crawl: Generated job_id={job_id} for job_title='{job_title}', company_name='{company_name}'")
-               
-                if job_id in processed_ids:
-                    logger.info(f"crawl: Skipping already processed job: {job_id} ({job_title} at {company_name})")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already processed.")
-                    total_jobs += 1
-                    continue
-               
                 if not company_name or company_name.lower() == "unknown":
                     logger.info(f"crawl: Skipping job with unknown company: {job_title} (ID: {job_id})")
                     print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
                     failure_count += 1
                     total_jobs += 1
                     continue
-               
                 total_jobs += 1
-               
                 company_id, company_message = save_company_to_wordpress(index, job_dict, auth_headers, licensed)
                 logger.debug(f"crawl: Company save result: company_id={company_id}, company_message={company_message}")
                 if company_id is None:
                     failure_count += 1
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed - company save error.")
                     continue
+                if company_message and "already exists" in company_message.lower():
+                    logger.info(f"crawl: Company {company_name} (ID: {company_id}) already exists, proceeding with job")
                 job_post_id, job_message = save_article_to_wordpress(index, job_dict, company_id, auth_headers, licensed)
                 logger.debug(f"crawl: Job save result: job_post_id={job_post_id}, job_message={job_message}")
-               
+                if job_post_id is not None and job_message and "already exists" in job_message.lower():
+                    logger.info(f"crawl: Skipping already posted job: {job_id} ({job_title} at {company_name})")
+                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already exists.")
+                    total_jobs += 1
+                    continue
                 if job_post_id is not None:
-                    processed_ids.add(job_id)
                     logger.info(f"crawl: Processed and saved job: {job_id} - {job_title} at {company_name}")
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) saved successfully. Message: {job_message}")
                     success_count += 1
                 else:
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to save. Check logs for details.")
                     failure_count += 1
-           
             save_last_page(i + 1)
-           
         except Exception as e:
             logger.error(f"crawl: Error fetching job search page: {url} - {str(e)}", exc_info=True)
             failure_count += 1
-    save_processed_ids(processed_ids)
     logger.info(f"crawl: Completed. Total jobs processed: {total_jobs}, Successfully saved: {success_count}, Failed: {failure_count}")
     print("\n--- Summary ---")
     print(f"Total jobs processed: {total_jobs}")
@@ -431,7 +394,7 @@ def scrape_job_details(job_url, licensed):
             company_url = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set company_url={UNLICENSED_MESSAGE}")
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
-        location = location.get_text().strip() if location else 'Mauritius'
+        location = location.get_text().strip() if location else ''
         location_parts = [part.strip() for part in location.split(',') if part.strip()]
         location = ', '.join(dict.fromkeys(location_parts))
         logger.info(f"scrape_job_details: Deduplicated location for {job_title}: {location}")
@@ -518,7 +481,7 @@ def scrape_job_details(job_url, licensed):
                     job_description = '\n\n'.join(unique_paragraphs)
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
-                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split(delimiter))}')
+                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {job_description.count('\n\n') + 1}')
             else:
                 logger.warning(f"scrape_job_details: No job description container found for {job_title}")
         else:
@@ -562,7 +525,6 @@ def scrape_job_details(job_url, licensed):
                 logger.debug(f"scrape_job_details: Application URL GET response status={resp_app.status_code}, headers={resp_app.headers}, final_url={resp_app.url}")
                 resolved_application_url = resp_app.url
                 logger.info(f"scrape_job_details: Resolved Application URL: {resolved_application_url}")
-               
                 app_soup = BeautifulSoup(resp_app.text, 'html.parser')
                 email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
                 emails = re.findall(email_pattern, resp_app.text)
@@ -772,12 +734,16 @@ def main():
     logger.debug("main: Starting execution")
     # Check license key, country, keyword, site_url, wp_username, wp_app_password from command-line arguments
     license_key = sys.argv[1] if len(sys.argv) > 1 else ""
-    country = sys.argv[2] if len(sys.argv) > 2 else "Mauritius"
+    country = sys.argv[2] if len(sys.argv) > 2 else ""
     keyword = sys.argv[3] if len(sys.argv) > 3 else ""
     site_url = sys.argv[4] if len(sys.argv) > 4 else "https://mauritius.mimusjobs.com"
     wp_username = sys.argv[5] if len(sys.argv) > 5 else WP_USERNAME
     wp_app_password = sys.argv[6] if len(sys.argv) > 6 else WP_APP_PASSWORD
     logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, Site URL: {site_url}, WP Username: {wp_username}, WP App Password: {'*' * len(wp_app_password)}")
+    if not country:
+        logger.error("main: No country provided. Please specify a country in the plugin settings.")
+        print("Error: No country provided. Please specify a country in the plugin settings.")
+        sys.exit(1)
     licensed = license_key == VALID_LICENSE_KEY
     if not licensed:
         logger.warning("main: No valid license key provided. Scraping limited data.")
@@ -797,9 +763,7 @@ def main():
     WP_JOB_URL = f"{site_url}/wp-json/fetcher/v1/save-job"
     WP_COMPANY_URL = f"{site_url}/wp-json/fetcher/v1/save-company"
     logger.debug(f"main: Custom WP endpoints: WP_JOB_URL={WP_JOB_URL}, WP_COMPANY_URL={WP_COMPANY_URL}")
-    processed_ids = load_processed_ids()
-    logger.debug(f"main: Loaded {len(processed_ids)} processed job IDs")
-    crawl(auth_headers=wp_headers, processed_ids=processed_ids, licensed=licensed, country=country, keyword=keyword)
+    crawl(auth_headers=wp_headers, licensed=licensed, country=country, keyword=keyword)
     logger.debug("main: Completed execution")
 if __name__ == "__main__":
     main()
