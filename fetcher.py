@@ -259,6 +259,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
         }
     }
     logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
+    response = None
     try:
         response = requests.post(WP_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15)
         logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
