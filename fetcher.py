@@ -34,17 +34,19 @@ headers = {
 }
 logger.debug(f"Initialized HTTP headers: {headers}")
 
-# Constants for WordPress
-WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
-WP_COMPANY_URL = f"{WP_SITE_URL}/wp-json/wp/v2/company"
-WP_MEDIA_URL = f"{WP_SITE_URL}/wp-json/wp/v2/media"
-WP_JOB_TYPE_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job_listing_type"
-WP_JOB_REGION_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job_listing_region"
-WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-company"
-WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-job"
-WP_FETCHER_STATUS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-status"
-WP_CREDENTIALS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-credentials"
-logger.debug(f"WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_URL}, WP_MEDIA_URL={WP_MEDIA_URL}, WP_JOB_TYPE_URL={WP_JOB_TYPE_URL}, WP_JOB_REGION_URL={WP_JOB_REGION_URL}, WP_SAVE_COMPANY_URL={WP_SAVE_COMPANY_URL}, WP_SAVE_JOB_URL={WP_SAVE_JOB_URL}, WP_FETCHER_STATUS_URL={WP_FETCHER_STATUS_URL}, WP_CREDENTIALS_URL={WP_CREDENTIALS_URL}")
+# Constants for WordPress (using site_url from command-line arguments)
+def get_wp_urls(site_url):
+    return {
+        "WP_URL": f"{site_url}/wp-json/wp/v2/job-listings",
+        "WP_COMPANY_URL": f"{site_url}/wp-json/wp/v2/company",
+        "WP_MEDIA_URL": f"{site_url}/wp-json/wp/v2/media",
+        "WP_JOB_TYPE_URL": f"{site_url}/wp-json/wp/v2/job_listing_type",
+        "WP_JOB_REGION_URL": f"{site_url}/wp-json/wp/v2/job_listing_region",
+        "WP_SAVE_COMPANY_URL": f"{site_url}/wp-json/fetcher/v1/save-company",
+        "WP_SAVE_JOB_URL": f"{site_url}/wp-json/fetcher/v1/save-job",
+        "WP_FETCHER_STATUS_URL": f"{site_url}/wp-json/fetcher/v1/get-status",
+        "WP_CREDENTIALS_URL": f"{site_url}/wp-json/fetcher/v1/get-credentials"
+    }
 
 PROCESSED_IDS_FILE = os.path.join("uploads", "processed_job_ids.json")
 LAST_PAGE_FILE = os.path.join("uploads", "last_processed_page.txt")
@@ -143,7 +145,7 @@ def split_paragraphs(text, max_length=200):
     logger.debug(f"split_paragraphs: Returning text with {len(result)} paragraphs, length={len(final_text)}")
     return final_text
 
-def save_company_to_wordpress(index, company_data, wp_headers, licensed):
+def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
     logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
     company_name = company_data.get("company_name", "")
     company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
@@ -172,7 +174,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
     response = None
     try:
-        response = requests.post(WP_SAVE_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15)
+        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
         logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
         response.raise_for_status()
         post = response.json()
@@ -186,7 +188,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
         logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
         return None, None
 
-def save_article_to_wordpress(index, job_data, company_id, auth_headers, licensed):
+def save_article_to_wordpress(index, job_data, company_id, auth_headers, licensed, wp_urls):
     logger.debug(f"save_article_to_wordpress called with index={index}, job_data={json.dumps(job_data, indent=2)[:200]}..., company_id={company_id}, licensed={licensed}")
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", UNLICENSED_MESSAGE if not licensed else "")
@@ -234,7 +236,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     }
     logger.info(f"save_article_to_wordpress: Final job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
     try:
-        response = requests.post(WP_SAVE_JOB_URL, json=post_data, headers=auth_headers, timeout=15)
+        response = requests.post(wp_urls["WP_SAVE_JOB_URL"], json=post_data, headers=auth_headers, timeout=15)
         logger.debug(f"save_article_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
         response.raise_for_status()
         post = response.json()
@@ -295,7 +297,7 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"save_last_page: Failed to save last page to {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
 
-def crawl(auth_headers, processed_ids, licensed, country, keyword):
+def crawl(auth_headers, processed_ids, licensed, country, keyword, wp_urls):
     logger.debug(f"crawl called with processed_ids_count={len(processed_ids)}, licensed={licensed}, country={country}, keyword={keyword}")
     success_count = 0
     failure_count = 0
@@ -389,13 +391,13 @@ def crawl(auth_headers, processed_ids, licensed, country, keyword):
 
                 total_jobs += 1
 
-                company_id, company_message = save_company_to_wordpress(index, job_dict, auth_headers, licensed)
+                company_id, company_message = save_company_to_wordpress(index, job_dict, auth_headers, licensed, wp_urls)
                 logger.debug(f"crawl: Company save result: company_id={company_id}, company_message={company_message}")
                 if company_id is None:
                     failure_count += 1
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed - company save error.")
                     continue
-                job_post_id, job_message = save_article_to_wordpress(index, job_dict, company_id, auth_headers, licensed)
+                job_post_id, job_message = save_article_to_wordpress(index, job_dict, company_id, auth_headers, licensed, wp_urls)
                 logger.debug(f"crawl: Job save result: job_post_id={job_post_id}, job_message={job_message}")
 
                 if job_post_id is not None:
@@ -812,18 +814,22 @@ def main():
         logger.info("main: Valid license key provided. Scraping full job data.")
         print("Valid license key provided. Scraping full job data.")
     
+    # Get WordPress API URLs using site_url
+    wp_urls = get_wp_urls(site_url)
+    logger.debug(f"main: WordPress endpoints: {wp_urls}")
+
     # Fetch WordPress credentials from plugin endpoint
     try:
-        response = requests.get(WP_CREDENTIALS_URL, headers=headers, timeout=15)
+        response = requests.get(wp_urls["WP_CREDENTIALS_URL"], headers=headers, timeout=15)
         logger.debug(f"main: GET response for credentials status={response.status_code}, headers={response.headers}")
         response.raise_for_status()
         credentials = response.json()
-        wp_username = credentials.get('username', '')
-        wp_app_password = credentials.get('app_password', '')
+        wp_username = credentials.get('wp_username', '')
+        wp_app_password = credentials.get('wp_app_password', '')
         logger.debug(f"main: Fetched WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
     except Exception as e:
-        logger.error(f"main: Failed to fetch credentials from {WP_CREDENTIALS_URL}: {str(e)}", exc_info=True)
-        print(f"Error: Failed to fetch WordPress credentials from {WP_CREDENTIALS_URL}")
+        logger.error(f"main: Failed to fetch credentials from {wp_urls['WP_CREDENTIALS_URL']}: {str(e)}", exc_info=True)
+        print(f"Error: Failed to fetch WordPress credentials from {wp_urls['WP_CREDENTIALS_URL']}")
         return
 
     auth_string = f"{wp_username}:{wp_app_password}"
@@ -837,7 +843,7 @@ def main():
 
     processed_ids = load_processed_ids()
     logger.debug(f"main: Loaded {len(processed_ids)} processed job IDs")
-    crawl(auth_headers=wp_headers, processed_ids=processed_ids, licensed=licensed, country=country, keyword=keyword)
+    crawl(auth_headers=wp_headers, processed_ids=processed_ids, licensed=licensed, country=country, keyword=keyword, wp_urls=wp_urls)
     logger.debug("main: Completed execution")
 
 if __name__ == "__main__":
