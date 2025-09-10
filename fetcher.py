@@ -12,10 +12,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
 import sys
-
-# Create uploads directory before logging configuration
-os.makedirs("uploads", exist_ok=True)
-
 # Configure logging with verbose output
 logging.basicConfig(
     level=logging.DEBUG,
@@ -26,16 +22,18 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
+# Create uploads directory if it doesn't exist
+os.makedirs("uploads", exist_ok=True)
 # HTTP headers for scraping
 headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
 }
 logger.debug(f"Initialized HTTP headers: {headers}")
-
 # Constants for WordPress - dynamic from args
 WP_USERNAME = "mary"  # default
-WP_APP_PASSWORD = ""  # default
+WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"  # default
+LAST_PAGE_FILE = os.path.join("uploads", "last_processed_page.txt")
+logger.debug(f"File paths: LAST_PAGE_FILE={LAST_PAGE_FILE}")
 JOB_TYPE_MAPPING = {
     "Full-time": "full-time",
     "Part-time": "part-time",
@@ -56,13 +54,11 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
 }
 logger.debug(f"Job type mappings: {JOB_TYPE_MAPPING}")
 logger.debug(f"French to English job type mappings: {FRENCH_TO_ENGLISH_JOB_TYPE}")
-
 # Valid license key for full data scraping
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
 logger.debug(f"Valid license key: {'*' * len(VALID_LICENSE_KEY)}")
 logger.debug(f"Unlicensed message: {UNLICENSED_MESSAGE}")
-
 def sanitize_text(text, is_url=False):
     logger.debug(f"sanitize_text called with text='{text[:50]}{'...' if len(text) > 50 else ''}', is_url={is_url}")
     if not text:
@@ -80,10 +76,11 @@ def sanitize_text(text, is_url=False):
     logger.debug(f"sanitize_text: Removed HTML tags, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'(\w)\.(\w)', r'\1. \2', text)
     logger.debug(f"sanitize_text: Added space after periods, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
+    text = re.sub(r'(\w)(\w)', r'\1 \2', text) if re.match(r'^\w+$', text) else text
+    logger.debug(f"sanitize_text: Separated fused words, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = ' '.join(text.split())
     logger.debug(f"sanitize_text: Normalized whitespace, returning text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     return text
-
 def normalize_for_deduplication(text):
     logger.debug(f"normalize_for_deduplication called with text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'[^\w\s]', '', text)
@@ -93,13 +90,11 @@ def normalize_for_deduplication(text):
     result = text.lower()
     logger.debug(f"normalize_for_deduplication: Converted to lowercase, returning='{result[:50]}{'...' if len(result) > 50 else ''}'")
     return result
-
 def generate_id(combined):
     logger.debug(f"generate_id called with combined='{combined}'")
     id_hash = hashlib.md5(combined.encode()).hexdigest()[:16]
     logger.debug(f"generate_id: Generated id='{id_hash}'")
     return id_hash
-
 def split_paragraphs(text, max_length=200):
     logger.debug(f"split_paragraphs called with text='{text[:50]}{'...' if len(text) > 50 else ''}', max_length={max_length}")
     paragraphs = text.split('\n\n')
@@ -126,7 +121,6 @@ def split_paragraphs(text, max_length=200):
     final_text = '\n\n'.join(result)
     logger.debug(f"split_paragraphs: Returning text with {len(result)} paragraphs, length={len(final_text)}")
     return final_text
-
 def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
     company_name = company_data.get("company_name", "")
@@ -138,9 +132,6 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
     company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
     logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
-    if not company_name:
-        logger.warning(f"save_company_to_wordpress: Skipping company with empty name")
-        return None, "Empty company name"
     company_id = generate_id(company_name)
     post_data = {
         "company_id": company_id,
@@ -160,10 +151,10 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     response = None
     try:
         response = requests.post(WP_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15)
-        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}...")
+        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
         response.raise_for_status()
         post = response.json()
-        if post.get('success'):
+        if post['success']:
             logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
             return post.get("id"), post.get("message")
         else:
@@ -171,8 +162,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
             return post.get("id"), post.get("message")
     except requests.exceptions.RequestException as e:
         logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
-        return None, f"Failed to save company: {str(e)}"
-
+        return None, None
 def save_article_to_wordpress(index, job_data, company_id, auth_headers, licensed):
     logger.debug(f"save_article_to_wordpress called with index={index}, job_data={json.dumps(job_data, indent=2)[:200]}..., company_id={company_id}, licensed={licensed}")
     job_title = job_data.get("job_title", "")
@@ -187,9 +177,6 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     company_industry = job_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
     company_founded = job_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
     logger.debug(f"save_article_to_wordpress: Extracted job fields: title='{job_title}', description='{job_description[:50]}...', type='{job_type}', location='{location}', url='{job_url}', company='{company_name}', logo='{company_logo}', environment='{environment}', salary='{job_salary}', industry='{company_industry}', founded='{company_founded}'")
-    if not job_title or not company_name:
-        logger.warning(f"save_article_to_wordpress: Skipping job with empty title or company: title='{job_title}', company='{company_name}'")
-        return None, "Empty job title or company name"
     application = ''
     if '@' in job_data.get("description_application_info", ""):
         application = job_data.get("description_application_info", "")
@@ -225,10 +212,10 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     logger.info(f"save_article_to_wordpress: Final job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
     try:
         response = requests.post(WP_JOB_URL, json=post_data, headers=auth_headers, timeout=15)
-        logger.debug(f"save_article_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}...")
+        logger.debug(f"save_article_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
         response.raise_for_status()
         post = response.json()
-        if post.get('success'):
+        if post['success']:
             logger.info(f"save_article_to_wordpress: Successfully saved job {job_title}: ID {post.get('id')}, Message {post.get('message')}")
             return post.get("id"), post.get("message")
         else:
@@ -236,21 +223,38 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
             return post.get("id"), post.get("message")
     except requests.exceptions.RequestException as e:
         logger.error(f"save_article_to_wordpress: Failed to save job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
-        return None, f"Failed to save job: {str(e)}"
-
+        return None, None
+def load_last_page():
+    logger.debug(f"load_last_page called for file={LAST_PAGE_FILE}")
+    try:
+        if os.path.exists(LAST_PAGE_FILE):
+            with open(LAST_PAGE_FILE, "r") as f:
+                page = int(f.read().strip())
+                logger.info(f"load_last_page: Loaded last processed page: {page}")
+                return page
+        logger.debug(f"load_last_page: File {LAST_PAGE_FILE} does not exist")
+    except Exception as e:
+        logger.error(f"load_last_page: Failed to load last page from {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
+    logger.debug("load_last_page: Returning default page 0")
+    return 0
+def save_last_page(page):
+    logger.debug(f"save_last_page called with page={page}")
+    try:
+        with open(LAST_PAGE_FILE, "w") as f:
+            f.write(str(page))
+        logger.info(f"save_last_page: Saved last processed page: {page} to {LAST_PAGE_FILE}")
+    except Exception as e:
+        logger.error(f"save_last_page: Failed to save last page to {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
 def crawl(auth_headers, licensed, country, keyword):
     logger.debug(f"crawl called with licensed={licensed}, country={country}, keyword={keyword}")
     success_count = 0
     failure_count = 0
     total_jobs = 0
+    start_page = load_last_page()
     pages_to_scrape = 10
-    logger.debug(f"crawl: Scraping {pages_to_scrape} pages")
-    for i in range(pages_to_scrape):
-        base_url = f'https://www.linkedin.com/jobs/search?location={country}&start={i * 25}'
-        if keyword:
-            url = f'{base_url}&keywords={keyword}'
-        else:
-            url = base_url
+    logger.debug(f"crawl: Starting from page {start_page}, scraping {pages_to_scrape} pages")
+    for i in range(start_page, start_page + pages_to_scrape):
+        url = f'https://www.linkedin.com/jobs/search?keywords={keyword}&location={country}&start={i * 25}'
         logger.info(f"crawl: Fetching job search page: {url}")
         time.sleep(random.uniform(5, 10))
         try:
@@ -265,7 +269,7 @@ def crawl(auth_headers, licensed, country, keyword):
                 logger.error(f"crawl: Login or CAPTCHA detected at {response.url}, stopping crawl")
                 break
             soup = BeautifulSoup(response.text, 'html.parser')
-            job_list = soup.select("ul.jobs-search__results-list > li a[href*='/jobs/view/']")
+            job_list = soup.select("ul.jobs-search__results-list > li a")
             urls = [a['href'] for a in job_list if a.get('href')]
             logger.info(f"crawl: Found {len(urls)} job URLs on page {i}: {urls}")
             if not urls:
@@ -325,7 +329,7 @@ def crawl(auth_headers, licensed, country, keyword):
                 logger.debug(f"crawl: Company save result: company_id={company_id}, company_message={company_message}")
                 if company_id is None:
                     failure_count += 1
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed - company save error: {company_message}")
+                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed - company save error.")
                     continue
                 if company_message and "already exists" in company_message.lower():
                     logger.info(f"crawl: Company {company_name} (ID: {company_id}) already exists, proceeding with job")
@@ -341,8 +345,9 @@ def crawl(auth_headers, licensed, country, keyword):
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) saved successfully. Message: {job_message}")
                     success_count += 1
                 else:
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to save: {job_message}")
+                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to save. Check logs for details.")
                     failure_count += 1
+            save_last_page(i + 1)
         except Exception as e:
             logger.error(f"crawl: Error fetching job search page: {url} - {str(e)}", exc_info=True)
             failure_count += 1
@@ -351,12 +356,8 @@ def crawl(auth_headers, licensed, country, keyword):
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully saved: {success_count}")
     print(f"Failed to save or scrape: {failure_count}")
-
 def scrape_job_details(job_url, licensed):
     logger.debug(f"scrape_job_details called with job_url={job_url}, licensed={licensed}")
-    if '/company/' in job_url:
-        logger.warning(f"scrape_job_details: Skipping company page URL: {job_url}")
-        return None
     try:
         session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
@@ -369,9 +370,6 @@ def scrape_job_details(job_url, licensed):
         job_title = soup.select_one("h1.top-card-layout__title")
         job_title = job_title.get_text().strip() if job_title else ''
         logger.info(f"scrape_job_details: Scraped Job Title: {job_title}")
-        if not job_title:
-            logger.warning(f"scrape_job_details: No job title found for {job_url}, skipping")
-            return None
         company_logo = ''
         if licensed:
             company_logo_elem = soup.select_one("div.top-card-layout__entity-info-container a img")
@@ -383,9 +381,6 @@ def scrape_job_details(job_url, licensed):
         company_name = soup.select_one(".topcard__org-name-link")
         company_name = company_name.get_text().strip() if company_name else ''
         logger.info(f"scrape_job_details: Scraped Company Name: {company_name}")
-        if not company_name:
-            logger.warning(f"scrape_job_details: No company name found for {job_url}, skipping")
-            return None
         company_url = ''
         if licensed:
             company_url_elem = soup.select_one(".topcard__org-name-link")
@@ -471,8 +466,8 @@ def scrape_job_details(job_url, licensed):
                     seen = set()
                     unique_paragraphs = []
                     logger.debug(f"scrape_job_details: Raw text paragraphs for {job_title}: {[sanitize_text(para)[:50] for para in paragraphs]}")
-                    for p in paragraphs:
-                        para = sanitize_text(p)
+                    for para in paragraphs:
+                        para = sanitize_text(para)
                         if not para:
                             logger.debug(f"scrape_job_details: Skipping empty paragraph for {job_title}")
                             continue
@@ -486,6 +481,7 @@ def scrape_job_details(job_url, licensed):
                     job_description = '\n\n'.join(unique_paragraphs)
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
+                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {job_description.count('\n\n') + 1}')
             else:
                 logger.warning(f"scrape_job_details: No job description container found for {job_title}")
         else:
@@ -734,16 +730,16 @@ def scrape_job_details(job_url, licensed):
     except Exception as e:
         logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
         return None
-
 def main():
     logger.debug("main: Starting execution")
+    # Check license key, country, keyword, site_url, wp_username, wp_app_password from command-line arguments
     license_key = sys.argv[1] if len(sys.argv) > 1 else ""
     country = sys.argv[2] if len(sys.argv) > 2 else ""
     keyword = sys.argv[3] if len(sys.argv) > 3 else ""
     site_url = sys.argv[4] if len(sys.argv) > 4 else "https://mauritius.mimusjobs.com"
     wp_username = sys.argv[5] if len(sys.argv) > 5 else WP_USERNAME
     wp_app_password = sys.argv[6] if len(sys.argv) > 6 else WP_APP_PASSWORD
-    logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, Site URL: {site_url}, WP Username: {wp_username}, WP App Password: {'*' * len(wp_app_password) if wp_app_password else 'None'}")
+    logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, Site URL: {site_url}, WP Username: {wp_username}, WP App Password: {'*' * len(wp_app_password)}")
     if not country:
         logger.error("main: No country provided. Please specify a country in the plugin settings.")
         print("Error: No country provided. Please specify a country in the plugin settings.")
@@ -755,11 +751,8 @@ def main():
     else:
         logger.info("main: Valid license key provided. Scraping full job data.")
         print("Valid license key provided. Scraping full job data.")
-    if not wp_app_password:
-        logger.warning("main: No WordPress application password provided. API requests may fail.")
-        print("Warning: No WordPress application password provided. API requests may fail.")
     auth_string = f"{wp_username}:{wp_app_password}"
-    logger.debug(f"main: Constructing auth string with WP_USERNAME={wp_username}, WP_APP_PASSWORD={'*' * len(wp_app_password) if wp_app_password else 'None'}")
+    logger.debug(f"main: Constructing auth string with WP_USERNAME={wp_username}, WP_APP_PASSWORD={'*' * len(wp_app_password)}")
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
         "Authorization": f"Basic {auth}",
@@ -772,6 +765,5 @@ def main():
     logger.debug(f"main: Custom WP endpoints: WP_JOB_URL={WP_JOB_URL}, WP_COMPANY_URL={WP_COMPANY_URL}")
     crawl(auth_headers=wp_headers, licensed=licensed, country=country, keyword=keyword)
     logger.debug("main: Completed execution")
-
 if __name__ == "__main__":
     main()
