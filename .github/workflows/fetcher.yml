@@ -3,14 +3,14 @@ on:
   workflow_dispatch:
     inputs:
       country:
-        description: 'Country for job search (e.g., Zambia)'
+        description: 'Country for job search (e.g., United States)'
         required: true
       keyword:
         description: 'Optional keyword for job search (e.g., software engineer)'
         required: false
         default: ''
       wp_site_url:
-        description: 'WordPress site URL (e.g., https://mauritius.mimusjobs.com)'
+        description: 'WordPress site URL (e.g., https://example.com)'
         required: true
       wp_username:
         description: 'WordPress username for REST API authentication'
@@ -20,7 +20,7 @@ on:
         required: true
       license_key:
         description: 'License key for fetcher.py'
-        required: true
+        required: false  # Changed to required since the script expects it
     secrets:
       LICENSE_KEY:
         description: 'License key for fetcher.py'
