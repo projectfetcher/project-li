@@ -12,6 +12,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
 import sys
+
+# Create uploads directory before logging configuration
+os.makedirs("uploads", exist_ok=True)
+
 # Configure logging with verbose output
 logging.basicConfig(
     level=logging.DEBUG,
@@ -22,18 +26,19 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-# Create uploads directory if it doesn't exist
-os.makedirs("uploads", exist_ok=True)
+
 # HTTP headers for scraping
 headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
 }
 logger.debug(f"Initialized HTTP headers: {headers}")
+
 # Constants for WordPress - dynamic from args
 WP_USERNAME = "mary"  # default
 WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"  # default
 LAST_PAGE_FILE = os.path.join("uploads", "last_processed_page.txt")
 logger.debug(f"File paths: LAST_PAGE_FILE={LAST_PAGE_FILE}")
+
 JOB_TYPE_MAPPING = {
     "Full-time": "full-time",
     "Part-time": "part-time",
@@ -54,11 +59,13 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
 }
 logger.debug(f"Job type mappings: {JOB_TYPE_MAPPING}")
 logger.debug(f"French to English job type mappings: {FRENCH_TO_ENGLISH_JOB_TYPE}")
+
 # Valid license key for full data scraping
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
 logger.debug(f"Valid license key: {'*' * len(VALID_LICENSE_KEY)}")
 logger.debug(f"Unlicensed message: {UNLICENSED_MESSAGE}")
+
 def sanitize_text(text, is_url=False):
     logger.debug(f"sanitize_text called with text='{text[:50]}{'...' if len(text) > 50 else ''}', is_url={is_url}")
     if not text:
@@ -76,11 +83,10 @@ def sanitize_text(text, is_url=False):
     logger.debug(f"sanitize_text: Removed HTML tags, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'(\w)\.(\w)', r'\1. \2', text)
     logger.debug(f"sanitize_text: Added space after periods, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
-    text = re.sub(r'(\w)(\w)', r'\1 \2', text) if re.match(r'^\w+$', text) else text
-    logger.debug(f"sanitize_text: Separated fused words, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = ' '.join(text.split())
     logger.debug(f"sanitize_text: Normalized whitespace, returning text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     return text
+
 def normalize_for_deduplication(text):
     logger.debug(f"normalize_for_deduplication called with text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'[^\w\s]', '', text)
@@ -90,11 +96,13 @@ def normalize_for_deduplication(text):
     result = text.lower()
     logger.debug(f"normalize_for_deduplication: Converted to lowercase, returning='{result[:50]}{'...' if len(result) > 50 else ''}'")
     return result
+
 def generate_id(combined):
     logger.debug(f"generate_id called with combined='{combined}'")
     id_hash = hashlib.md5(combined.encode()).hexdigest()[:16]
     logger.debug(f"generate_id: Generated id='{id_hash}'")
     return id_hash
+
 def split_paragraphs(text, max_length=200):
     logger.debug(f"split_paragraphs called with text='{text[:50]}{'...' if len(text) > 50 else ''}', max_length={max_length}")
     paragraphs = text.split('\n\n')
@@ -121,6 +129,7 @@ def split_paragraphs(text, max_length=200):
     final_text = '\n\n'.join(result)
     logger.debug(f"split_paragraphs: Returning text with {len(result)} paragraphs, length={len(final_text)}")
     return final_text
+
 def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
     company_name = company_data.get("company_name", "")
@@ -163,6 +172,7 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed):
     except requests.exceptions.RequestException as e:
         logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
         return None, None
+
 def save_article_to_wordpress(index, job_data, company_id, auth_headers, licensed):
     logger.debug(f"save_article_to_wordpress called with index={index}, job_data={json.dumps(job_data, indent=2)[:200]}..., company_id={company_id}, licensed={licensed}")
     job_title = job_data.get("job_title", "")
@@ -224,6 +234,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     except requests.exceptions.RequestException as e:
         logger.error(f"save_article_to_wordpress: Failed to save job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
         return None, None
+
 def load_last_page():
     logger.debug(f"load_last_page called for file={LAST_PAGE_FILE}")
     try:
@@ -237,6 +248,7 @@ def load_last_page():
         logger.error(f"load_last_page: Failed to load last page from {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
     logger.debug("load_last_page: Returning default page 0")
     return 0
+
 def save_last_page(page):
     logger.debug(f"save_last_page called with page={page}")
     try:
@@ -245,6 +257,7 @@ def save_last_page(page):
         logger.info(f"save_last_page: Saved last processed page: {page} to {LAST_PAGE_FILE}")
     except Exception as e:
         logger.error(f"save_last_page: Failed to save last page to {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
+
 def crawl(auth_headers, licensed, country, keyword):
     logger.debug(f"crawl called with licensed={licensed}, country={country}, keyword={keyword}")
     success_count = 0
@@ -254,7 +267,12 @@ def crawl(auth_headers, licensed, country, keyword):
     pages_to_scrape = 10
     logger.debug(f"crawl: Starting from page {start_page}, scraping {pages_to_scrape} pages")
     for i in range(start_page, start_page + pages_to_scrape):
-        url = f'https://www.linkedin.com/jobs/search?keywords={keyword}&location={country}&start={i * 25}'
+        # Construct LinkedIn search URL dynamically based on whether keyword is provided
+        base_url = f'https://www.linkedin.com/jobs/search?location={country}&start={i * 25}'
+        if keyword:
+            url = f'{base_url}&keywords={keyword}'
+        else:
+            url = base_url
         logger.info(f"crawl: Fetching job search page: {url}")
         time.sleep(random.uniform(5, 10))
         try:
@@ -356,6 +374,7 @@ def crawl(auth_headers, licensed, country, keyword):
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully saved: {success_count}")
     print(f"Failed to save or scrape: {failure_count}")
+
 def scrape_job_details(job_url, licensed):
     logger.debug(f"scrape_job_details called with job_url={job_url}, licensed={licensed}")
     try:
@@ -730,6 +749,7 @@ def scrape_job_details(job_url, licensed):
     except Exception as e:
         logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
         return None
+
 def main():
     logger.debug("main: Starting execution")
     # Check license key, country, keyword, site_url, wp_username, wp_app_password from command-line arguments
@@ -765,5 +785,6 @@ def main():
     logger.debug(f"main: Custom WP endpoints: WP_JOB_URL={WP_JOB_URL}, WP_COMPANY_URL={WP_COMPANY_URL}")
     crawl(auth_headers=wp_headers, licensed=licensed, country=country, keyword=keyword)
     logger.debug("main: Completed execution")
+
 if __name__ == "__main__":
     main()
