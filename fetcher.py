@@ -193,7 +193,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", UNLICENSED_MESSAGE if not licensed else "")
     job_type = job_data.get("job_type", "")
-    location = job_data.get("location", "Mauritius")
+    location = job_data.get("location", "Unknown")
     job_url = job_data.get("job_url", "")
     company_name = job_data.get("company_name", "")
     company_logo = job_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
@@ -459,7 +459,7 @@ def scrape_job_details(job_url, licensed):
             company_url = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set company_url={UNLICENSED_MESSAGE}")
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
-        location = location.get_text().strip() if location else 'Mauritius'
+        location = location.get_text().strip() if location else 'Unknown'
         location_parts = [part.strip() for part in location.split(',') if part.strip()]
         location = ', '.join(dict.fromkeys(location_parts))
         logger.info(f"scrape_job_details: Deduplicated location for {job_title}: {location}")
@@ -752,17 +752,17 @@ def scrape_job_details(job_url, licensed):
                 company_founded = UNLICENSED_MESSAGE
                 company_specialties = UNLICENSED_MESSAGE
                 company_address = UNLICENSED_MESSAGE
-        else:
-            company_details = UNLICENSED_MESSAGE
-            company_website_url = UNLICENSED_MESSAGE
-            company_industry = UNLICENSED_MESSAGE
-            company_size = UNLICENSED_MESSAGE
-            company_headquarters = UNLICENSED_MESSAGE
-            company_type = UNLICENSED_MESSAGE
-            company_founded = UNLICENSED_MESSAGE
-            company_specialties = UNLICENSED_MESSAGE
-            company_address = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set company fields to {UNLICENSED_MESSAGE}")
+            else:
+                company_details = UNLICENSED_MESSAGE
+                company_website_url = UNLICENSED_MESSAGE
+                company_industry = UNLICENSED_MESSAGE
+                company_size = UNLICENSED_MESSAGE
+                company_headquarters = UNLICENSED_MESSAGE
+                company_type = UNLICENSED_MESSAGE
+                company_founded = UNLICENSED_MESSAGE
+                company_specialties = UNLICENSED_MESSAGE
+                company_address = UNLICENSED_MESSAGE
+                logger.debug(f"scrape_job_details: Unlicensed, set company fields to {UNLICENSED_MESSAGE}")
         row = [
             job_title,
             company_logo,
@@ -800,12 +800,21 @@ def scrape_job_details(job_url, licensed):
 
 def main():
     logger.debug("main: Starting execution")
-    # Check license key, country, keyword, site_url from command-line arguments
+    # Check license key, country, keyword, site_url, wp_username, wp_app_password from command-line arguments
     license_key = sys.argv[1] if len(sys.argv) > 1 else ""
-    country = sys.argv[2] if len(sys.argv) > 2 else "Mauritius"
+    country = sys.argv[2] if len(sys.argv) > 2 else "Unknown"
     keyword = sys.argv[3] if len(sys.argv) > 3 else ""
-    site_url = sys.argv[4] if len(sys.argv) > 4 else "https://mauritius.mimusjobs.com"
-    logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, Site URL: {site_url}")
+    site_url = sys.argv[4] if len(sys.argv) > 4 else ""
+    wp_username = sys.argv[5] if len(sys.argv) > 5 else ""
+    wp_app_password = sys.argv[6] if len(sys.argv) > 6 else ""
+    logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, Site URL: {site_url}, WP Username: {wp_username}, WP App Password: {'*' * len(wp_app_password) if wp_app_password else 'None'}")
+    
+    # Validate site_url
+    if not site_url or not site_url.startswith(('http://', 'https://')):
+        logger.error("main: Invalid or missing site_url. Please provide a valid WordPress site URL (e.g., https://example.com)")
+        print("Error: Invalid or missing site_url. Please provide a valid WordPress site URL (e.g., https://example.com)")
+        return
+    
     licensed = license_key == VALID_LICENSE_KEY
     if not licensed:
         logger.warning("main: No valid license key provided. Scraping limited data.")
@@ -818,20 +827,34 @@ def main():
     wp_urls = get_wp_urls(site_url)
     logger.debug(f"main: WordPress endpoints: {wp_urls}")
 
+    # Prepare authentication headers for credentials request
+    if wp_username and wp_app_password:
+        auth_string = f"{wp_username}:{wp_app_password}"
+        logger.debug(f"main: Constructing auth string with WP_USERNAME={wp_username}, WP_APP_PASSWORD={'*' * len(wp_app_password)}")
+        auth = base64.b64encode(auth_string.encode()).decode()
+        auth_headers = {
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/json"
+        }
+    else:
+        auth_headers = headers
+        logger.warning("main: No WP username or app password provided; attempting unauthenticated request to credentials endpoint")
+
     # Fetch WordPress credentials from plugin endpoint
     try:
-        response = requests.get(wp_urls["WP_CREDENTIALS_URL"], headers=headers, timeout=15)
+        response = requests.get(wp_urls["WP_CREDENTIALS_URL"], headers=auth_headers, timeout=15)
         logger.debug(f"main: GET response for credentials status={response.status_code}, headers={response.headers}")
         response.raise_for_status()
         credentials = response.json()
-        wp_username = credentials.get('wp_username', '')
-        wp_app_password = credentials.get('wp_app_password', '')
+        wp_username = credentials.get('wp_username', wp_username)
+        wp_app_password = credentials.get('wp_app_password', wp_app_password)
         logger.debug(f"main: Fetched WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
     except Exception as e:
         logger.error(f"main: Failed to fetch credentials from {wp_urls['WP_CREDENTIALS_URL']}: {str(e)}", exc_info=True)
-        print(f"Error: Failed to fetch WordPress credentials from {wp_urls['WP_CREDENTIALS_URL']}")
+        print(f"Error: Failed to fetch WordPress credentials from {wp_urls['WP_CREDENTIALS_URL']}. Check site URL, credentials, and server configuration.")
         return
 
+    # Prepare headers for subsequent requests
     auth_string = f"{wp_username}:{wp_app_password}"
     logger.debug(f"main: Constructing auth string with WP_USERNAME={wp_username}, WP_APP_PASSWORD={'*' * len(wp_app_password)}")
     auth = base64.b64encode(auth_string.encode()).decode()
