@@ -1,4 +1,5 @@
 name: Job Fetcher
+
 on:
   workflow_dispatch:
     inputs:
@@ -18,44 +19,30 @@ on:
       wp_app_password:
         description: 'WordPress application password for REST API authentication'
         required: true
-      license_key:
-        description: 'License key for fetcher.py'
-        required: false  # Changed to required since the script expects it
-    secrets:
-      LICENSE_KEY:
-        description: 'License key for fetcher.py'
-        required: true
-      WP_APP_PASSWORD:
-        description: 'WordPress application password'
-        required: true
+
 jobs:
   fetch-jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 urllib3
-      - name: Debug input parameters
-        run: |
-          echo "License Key: [REDACTED]"
-          echo "Country: ${{ inputs.country }}"
-          echo "Keyword: ${{ inputs.keyword }}"
-          echo "WP Site URL: ${{ inputs.wp_site_url }}"
-          echo "WP Username: ${{ inputs.wp_username }}"
-          echo "WP App Password: [REDACTED]"
+
       - name: Run fetcher
-        run: |
-          python fetcher.py "${{ secrets.LICENSE_KEY }}" "${{ inputs.country }}" "${{ inputs.keyword }}" "${{ inputs.wp_site_url }}" "${{ inputs.wp_username }}" "${{ secrets.WP_APP_PASSWORD }}"
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fetcher-logs
-          path: uploads/fetcher.log
+        env:
+          WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
+          WP_USERNAME: ${{ github.event.inputs.wp_username }}
+          WP_APP_PASSWORD: ${{ github.event.inputs.wp_app_password }}
+          COUNTRY: ${{ github.event.inputs.country }}
+          KEYWORD: ${{ github.event.inputs.keyword }}
+          FETCHER_TOKEN: ${{ secrets.FETCHER_TOKEN }}
+        run: python fetcher.py
