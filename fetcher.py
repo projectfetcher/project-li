@@ -552,7 +552,7 @@ def scrape_job_details(job_url, licensed):
                     seen = set()
                     unique_paragraphs = []
                     logger.debug(f"scrape_job_details: Raw text paragraphs for {job_title}: {[sanitize_text(para)[:50] for para in paragraphs]}")
-                    for p in paragraphs:
+                    for para in paragraphs:
                         para = sanitize_text(para)
                         if not para:
                             logger.debug(f"scrape_job_details: Skipping empty paragraph for {job_title}")
