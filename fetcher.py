@@ -526,8 +526,13 @@ def scrape_job_details(job_url, licensed):
             logger.debug(f"scrape_job_details: Unlicensed, set industries={UNLICENSED_MESSAGE}")
         job_description = ''
         if licensed:
-            description_container = soup.select_one(".show-more-less-html__markup")
+            # Try multiple selectors to find the job description container
+            description_container = soup.select_one(".show-more-less-html__markup") or \
+                                   soup.select_one(".description__text") or \
+                                   soup.select_one("div.jobs-description-content__text")
             if description_container:
+                logger.debug(f"scrape_job_details: Found job description container for {job_title}")
+                # Try to extract paragraphs or list items
                 paragraphs = description_container.find_all(['p', 'li'], recursive=False)
                 if paragraphs:
                     seen = set()
@@ -547,6 +552,7 @@ def scrape_job_details(job_url, licensed):
                             logger.info(f"scrape_job_details: Removed duplicate paragraph for {job_title}: {para[:50]}...")
                     job_description = '\n\n'.join(unique_paragraphs)
                 else:
+                    # Fallback to raw text if no <p> or <li> tags
                     raw_text = description_container.get_text(separator='\n').strip()
                     paragraphs = [para.strip() for para in raw_text.split('\n\n') if para.strip()]
                     seen = set()
@@ -568,9 +574,14 @@ def scrape_job_details(job_url, licensed):
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
                 delimiter = "\n\n"
-                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {job_description.count(delimiter) + 1}')
+                if job_description:
+                    logger.info(f"scrape_job_details: Scraped Job Description (length: {len(job_description)}, paragraphs: {job_description.count(delimiter) + 1})")
+                else:
+                    logger.warning(f"scrape_job_details: Job description is empty for {job_title} despite finding container")
             else:
-                logger.warning(f"scrape_job_details: No job description container found for {job_title}")
+                logger.warning(f"scrape_job_details: No job description container found for {job_title}. Possible HTML structure change or JavaScript-rendered content.")
+                # Log a sample of the page HTML for debugging
+                logger.debug(f"scrape_job_details: Page HTML snippet: {response.text[:500]}...")
         else:
             job_description = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set job_description={UNLICENSED_MESSAGE}")
@@ -658,7 +669,6 @@ def scrape_job_details(job_url, licensed):
             final_application_email = UNLICENSED_MESSAGE
             final_application_url = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set final_application_email={UNLICENSED_MESSAGE}, final_application_url={UNLICENSED_MESSAGE}")
-        # Initialize company fields before license check
         company_details = ''
         company_website_url = ''
         company_industry = ''
@@ -819,6 +829,71 @@ def scrape_job_details(job_url, licensed):
     except Exception as e:
         logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
         return None
+
+def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
+    logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
+    company_name = company_data.get("company_name", "")
+    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
+    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
+    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
+    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
+    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
+    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
+    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
+    logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
+    
+    # Check for existing company with the same logo
+    if company_logo and company_logo != UNLICENSED_MESSAGE:
+        try:
+            # Query WordPress for companies with the same logo
+            response = requests.get(
+                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
+                headers=wp_headers,
+                timeout=15
+            )
+            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
+            response.raise_for_status()
+            companies = response.json()
+            if companies:
+                # Found an existing company with the same logo
+                company_id = companies[0].get('id')
+                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
+                return company_id, f"Company with logo {company_logo} already exists"
+        except Exception as e:
+            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
+            # Continue to save the company if the check fails
+    
+    company_id = generate_id(company_name)
+    post_data = {
+        "company_id": company_id,
+        "company_name": sanitize_text(company_name),
+        "company_details": company_details,
+        "company_logo": sanitize_text(company_logo, is_url=True),
+        "company_website": sanitize_text(company_website, is_url=True),
+        "company_industry": sanitize_text(company_industry),
+        "company_founded": sanitize_text(company_founded),
+        "company_type": sanitize_text(company_type),
+        "company_address": sanitize_text(company_address),
+        "company_tagline": sanitize_text(company_details),
+        "company_twitter": "",
+        "company_video": ""
+    }
+    logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
+    response = None
+    try:
+        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
+        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
+        response.raise_for_status()
+        post = response.json()
+        if post['success']:
+            logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
+            return post.get("id"), post.get("message")
+        else:
+            logger.info(f"save_company_to_wordpress: Company {company_name} skipped: {post.get('message')}")
+            return post.get("id"), post.get("message")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
+        return None, None
 
 def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
     logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
