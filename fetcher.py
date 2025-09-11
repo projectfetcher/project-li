@@ -437,8 +437,8 @@ def scrape_job_details(job_url, licensed):
         logger.info(f"scrape_job_details: Scraped Job Title: {job_title}")
         company_logo = ''
         if licensed:
-            company_logo_elem = soup.select_one("div.top-card-layout__entity-info-container a img")
-            company_logo = (company_logo_elem.get('data-delayed-url') or company_logo_elem.get('src') or '') if company_logo_elem else ''
+            company_logo_elem = soup.select_one("img.artdeco-entity-image.artdeco-entity-image--square-5")
+            company_logo = company_logo_elem.get('src') if company_logo_elem and company_logo_elem.get('src') else ''
             logger.info(f"scrape_job_details: Scraped Company Logo URL: {company_logo}")
         else:
             company_logo = UNLICENSED_MESSAGE
