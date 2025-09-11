@@ -435,7 +435,7 @@ def scrape_job_details(job_url, licensed):
         job_title = soup.select_one("h1.top-card-layout__title")
         job_title = job_title.get_text().strip() if job_title else ''
         logger.info(f"scrape_job_details: Scraped Job Title: {job_title}")
-         company_logo = ''
+        company_logo = ''
         if licensed:
             company_logo_elem = soup.select_one("img.artdeco-entity-image.artdeco-entity-image--square-5")
             company_logo = company_logo_elem.get('src') if company_logo_elem and company_logo_elem.get('src') else ''
