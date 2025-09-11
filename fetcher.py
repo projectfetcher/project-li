@@ -678,23 +678,13 @@ def scrape_job_details(job_url, licensed):
                                 raise
                             time.sleep(2)
                     company_soup = BeautifulSoup(company_response.text, 'html.parser')
-                    # Try multiple selectors for company details
-                    company_details_selectors = [
-                        "p[data-test-id='about-us__description']",
-                        "p.about-us__description",
-                        "section.core-section-container > div > p",
-                        "div.org-about-module__description",
-                        "section.org-about-us > div > p"
-                    ]
-                    for selector in company_details_selectors:
-                        company_details_elem = company_soup.select_one(selector)
-                        if company_details_elem:
-                            company_details = company_details_elem.get_text().strip()
-                            logger.info(f"scrape_job_details: Scraped Company Details with selector {selector}: {company_details[:100] + '...' if company_details else ''}")
-                            break
-                    if not company_details:
-                        logger.warning(f"scrape_job_details: No company details found for {company_name} with any selector")
-                    company_website_anchor = company_soup.select_one("dl > div:nth-child(1) > dd > a")
+                    # Scrape company details using data-test-id
+                    company_details_elem = company_soup.select_one("p[data-test-id='about-us__description']")
+                    company_details = company_details_elem.get_text().strip() if company_details_elem else ''
+                    logger.info(f"scrape_job_details: Scraped Company Details: {company_details[:100] + '...' if company_details else ''}")
+                    # Scrape website using data-test-id
+                    website_div = company_soup.select_one("div[data-test-id='about-us__website']")
+                    company_website_anchor = website_div.select_one("dd a") if website_div else None
                     company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
                     logger.info(f"scrape_job_details: Scraped Company Website URL: {company_website_url}")
                     if 'linkedin.com/redir/redirect' in company_website_url:
@@ -725,11 +715,9 @@ def scrape_job_details(job_url, licensed):
                                 logger.warning(f"scrape_job_details: No external URL found in error for {company_name}")
                                 company_website_url = ''
                     else:
-                        description_elem = company_soup.select_one("p[data-test-id='about-us__description']")
-                        if description_elem:
-                            description_text = description_elem.get_text()
+                        if company_details:
                             url_pattern = r'https?://(?!www\.linkedin\.com)[^\s]+'
-                            urls = re.findall(url_pattern, description_text)
+                            urls = re.findall(url_pattern, company_details)
                             if urls:
                                 company_website_url = urls[0]
                                 logger.info(f"scrape_job_details: Found company website in description: {company_website_url}")
@@ -753,38 +741,40 @@ def scrape_job_details(job_url, licensed):
                         company_website_url = ''
                     def get_company_detail(label):
                         logger.debug(f"scrape_job_details: get_company_detail called with label={label}")
-                        elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
-                        if not elements:
-                            logger.warning(f"scrape_job_details: No detail elements found for {label}")
-                        for elem in elements:
-                            dt = elem.find("dt")
-                            if dt and dt.get_text().strip().lower() == label.lower():
-                                dd = elem.find("dd")
-                                value = dd.get_text().strip() if dd else ''
-                                logger.debug(f"scrape_job_details: Found {label}='{value}'")
-                                return value
-                        logger.debug(f"scrape_job_details: No {label} found")
+                        div_selector = f"div[data-test-id='about-us__{label.lower()}']"
+                        detail_div = company_soup.select_one(div_selector)
+                        if detail_div:
+                            dd = detail_div.select_one("dd")
+                            value = dd.get_text().strip() if dd else ''
+                            logger.debug(f"scrape_job_details: Found {label}='{value}'")
+                            return value
+                        logger.debug(f"scrape_job_details: No {label} found with selector {div_selector}")
                         return ''
-                    company_industry = get_company_detail("Industry")
+                    company_industry = get_company_detail("industry")
                     logger.info(f"scrape_job_details: Scraped Company Industry: {company_industry}")
-                    company_size = get_company_detail("Company size")
+                    company_size = get_company_detail("size")
                     logger.info(f"scrape_job_details: Scraped Company Size: {company_size}")
-                    company_headquarters = get_company_detail("Headquarters")
+                    company_headquarters = get_company_detail("headquarters")
                     logger.info(f"scrape_job_details: Scraped Company Headquarters: {company_headquarters}")
-                    company_type = get_company_detail("Type")
+                    company_type = get_company_detail("organizationType")
                     logger.info(f"scrape_job_details: Scraped Company Type: {company_type}")
-                    company_founded = get_company_detail("Founded")
+                    company_founded = get_company_detail("foundedOn")
                     logger.info(f"scrape_job_details: Scraped Company Founded: {company_founded}")
-                    company_specialties = get_company_detail("Specialties")
+                    company_specialties = get_company_detail("specialties")
                     logger.info(f"scrape_job_details: Scraped Company Specialties: {company_specialties}")
                     # For address, get primary location
-                    primary_address_elem = company_soup.select_one("span.tag-sm.tag-enabled + div[id^='address']")
-                    if primary_address_elem:
-                        company_address = primary_address_elem.get_text(separator=', ').strip()
-                        logger.info(f"scrape_job_details: Scraped Primary Company Address: {company_address}")
+                    primary_li = company_soup.select_one("li span.tag-sm.tag-enabled")
+                    if primary_li:
+                        address_div = primary_li.find_next_sibling("div")
+                        if address_div:
+                            company_address = address_div.get_text(separator=', ').strip()
+                            logger.info(f"scrape_job_details: Scraped Primary Company Address: {company_address}")
+                        else:
+                            company_address = company_headquarters
+                            logger.warning(f"scrape_job_details: No address div found, using headquarters: {company_address}")
                     else:
                         company_address = company_headquarters
-                        logger.warning(f"scrape_job_details: No primary address found, using headquarters: {company_address}")
+                        logger.warning(f"scrape_job_details: No primary location found, using headquarters: {company_address}")
                 except Exception as e:
                     logger.error(f"scrape_job_details: Error fetching company page: {company_url} - {str(e)}", exc_info=True)
                     company_details = ''
@@ -841,6 +831,71 @@ def scrape_job_details(job_url, licensed):
     except Exception as e:
         logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
         return None
+
+def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
+    logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
+    company_name = company_data.get("company_name", "")
+    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
+    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
+    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
+    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
+    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
+    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
+    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
+    logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
+    
+    # Check for existing company with the same logo
+    if company_logo and company_logo != UNLICENSED_MESSAGE:
+        try:
+            # Query WordPress for companies with the same logo
+            response = requests.get(
+                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
+                headers=wp_headers,
+                timeout=15
+            )
+            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
+            response.raise_for_status()
+            companies = response.json()
+            if companies:
+                # Found an existing company with the same logo
+                company_id = companies[0].get('id')
+                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
+                return company_id, f"Company with logo {company_logo} already exists"
+        except Exception as e:
+            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
+            # Continue to save the company if the check fails
+    
+    company_id = generate_id(company_name)
+    post_data = {
+        "company_id": company_id,
+        "company_name": sanitize_text(company_name),
+        "company_details": company_details,
+        "company_logo": sanitize_text(company_logo, is_url=True),
+        "company_website": sanitize_text(company_website, is_url=True),
+        "company_industry": sanitize_text(company_industry),
+        "company_founded": sanitize_text(company_founded),
+        "company_type": sanitize_text(company_type),
+        "company_address": sanitize_text(company_address),
+        "company_tagline": sanitize_text(company_details),
+        "company_twitter": "",
+        "company_video": ""
+    }
+    logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
+    response = None
+    try:
+        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
+        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
+        response.raise_for_status()
+        post = response.json()
+        if post['success']:
+            logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
+            return post.get("id"), post.get("message")
+        else:
+            logger.info(f"save_company_to_wordpress: Company {company_name} skipped: {post.get('message')}")
+            return post.get("id"), post.get("message")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
+        return None, None
 
 def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
     logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
