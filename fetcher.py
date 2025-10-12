@@ -42,10 +42,10 @@ def get_wp_urls(site_url):
         "WP_MEDIA_URL": f"{site_url}/wp-json/wp/v2/media",
         "WP_JOB_TYPE_URL": f"{site_url}/wp-json/wp/v2/job_listing_type",
         "WP_JOB_REGION_URL": f"{site_url}/wp-json/wp/v2/job_listing_region",
-        "WP_SAVE_COMPANY_URL": f"{site_url}/wp-json/fetcher/v1/save-company",
-        "WP_SAVE_JOB_URL": f"{site_url}/wp-json/fetcher/v1/save-job",
-        "WP_FETCHER_STATUS_URL": f"{site_url}/wp-json/fetcher/v1/get-status",
-        "WP_CREDENTIALS_URL": f"{site_url}/wp-json/fetcher/v1/get-credentials"
+        "WP_SAVE_COMPANY_URL": f"{site_url}/wp-json/mimus_job_fetcher/v1/save-company",
+        "WP_SAVE_JOB_URL": f"{site_url}/wp-json/mimus_job_fetcher/v1/save-job",
+        "WP_FETCHER_STATUS_URL": f"{site_url}/wp-json/mimus_job_fetcher/v1/get-status",
+        "WP_CREDENTIALS_URL": f"{site_url}/wp-json/mimus_job_fetcher/v1/get-credentials"
     }
 
 PROCESSED_IDS_FILE = os.path.join("uploads", "processed_job_ids.json")
@@ -156,6 +156,28 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls
     company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
     company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
     logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
+    
+    # Check for existing company with the same logo
+    if company_logo and company_logo != UNLICENSED_MESSAGE:
+        try:
+            # Query WordPress for companies with the same logo
+            response = requests.get(
+                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
+                headers=wp_headers,
+                timeout=15
+            )
+            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
+            response.raise_for_status()
+            companies = response.json()
+            if companies:
+                # Found an existing company with the same logo
+                company_id = companies[0].get('id')
+                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
+                return company_id, f"Company with logo {company_logo} already exists"
+        except Exception as e:
+            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
+            # Continue to save the company if the check fails
+    
     company_id = generate_id(company_name)
     post_data = {
         "company_id": company_id,
@@ -345,817 +367,107 @@ def crawl(auth_headers, processed_ids, licensed, country, keyword, wp_urls):
                     "company_url": job_data[3],
                     "location": job_data[4],
                     "environment": job_data[5],
-                    "job_type": job_data[6],
-                    "level": job_data[7],
-                    "job_functions": job_data[8],
-                    "industries": job_data[9],
-                    "job_description": job_data[10],
-                    "job_url": job_data[11],
-                    "company_details": job_data[12],
-                    "company_website_url": job_data[13],
-                    "company_industry": job_data[14],
-                    "company_size": job_data[15],
-                    "company_headquarters": job_data[16],
-                    "company_type": job_data[17],
-                    "company_founded": job_data[18],
-                    "company_specialties": job_data[19],
-                    "company_address": job_data[20],
-                    "application_url": job_data[21],
-                    "description_application_info": job_data[22],
-                    "resolved_application_info": job_data[23],
-                    "final_application_email": job_data[24],
-                    "final_application_url": job_data[25],
-                    "resolved_application_url": job_data[26],
-                    "job_salary": ""
+                    "job_description": job_data[6],
+                    "job_url": job_url,
+                    "application_url": job_data[7],
+                    "resolved_application_url": job_data[8],
+                    "description_application_info": job_data[9],
+                    "company_website_url": job_data[10],
+                    "company_details": job_data[11],
+                    "company_industry": job_data[12],
+                    "company_founded": job_data[13],
+                    "company_type": job_data[14],
+                    "company_address": job_data[15],
+                    "job_type": job_data[16],
+                    "job_salary": job_data[17]
                 }
-                logger.debug(f"crawl: Constructed job_dict={json.dumps(job_dict, indent=2)[:200]}...")
-
-                job_title = job_dict.get("job_title", "Unknown Job")
-                company_name = job_dict.get("company_name", "")
-
-                job_id = generate_id(f"{job_title}_{company_name}")
-                logger.debug(f"crawl: Generated job_id={job_id} for job_title='{job_title}', company_name='{company_name}'")
-
+                normalized_title = normalize_for_deduplication(job_dict["job_title"])
+                normalized_company = normalize_for_deduplication(job_dict["company_name"])
+                job_id = generate_id(normalized_title + normalized_company)
                 if job_id in processed_ids:
-                    logger.info(f"crawl: Skipping already processed job: {job_id} ({job_title} at {company_name})")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already processed.")
-                    total_jobs += 1
+                    logger.info(f"crawl: Job {job_id} already processed, skipping")
                     continue
-
-                if not company_name or company_name.lower() == "unknown":
-                    logger.info(f"crawl: Skipping job with unknown company: {job_title} (ID: {job_id})")
-                    print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
-                    failure_count += 1
-                    total_jobs += 1
-                    continue
-
-                total_jobs += 1
-
-                company_id, company_message = save_company_to_wordpress(index, job_dict, auth_headers, licensed, wp_urls)
-                logger.debug(f"crawl: Company save result: company_id={company_id}, company_message={company_message}")
-                if company_id is None:
-                    failure_count += 1
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed - company save error.")
-                    continue
-                job_post_id, job_message = save_article_to_wordpress(index, job_dict, company_id, auth_headers, licensed, wp_urls)
-                logger.debug(f"crawl: Job save result: job_post_id={job_post_id}, job_message={job_message}")
-
-                if job_post_id is not None:
-                    processed_ids.add(job_id)
-                    logger.info(f"crawl: Processed and saved job: {job_id} - {job_title} at {company_name}")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) saved successfully. Message: {job_message}")
-                    success_count += 1
+                company_data = {
+                    "company_name": job_dict["company_name"],
+                    "company_details": job_dict["company_details"],
+                    "company_logo": job_dict["company_logo"],
+                    "company_website_url": job_dict["company_website_url"],
+                    "company_industry": job_dict["company_industry"],
+                    "company_founded": job_dict["company_founded"],
+                    "company_type": job_dict["company_type"],
+                    "company_address": job_dict["company_address"]
+                }
+                company_id, company_message = save_company_to_wordpress(index, company_data, auth_headers, licensed, wp_urls)
+                if company_id:
+                    job_id_saved, job_message = save_article_to_wordpress(index, job_dict, company_id, auth_headers, licensed, wp_urls)
+                    if job_id_saved:
+                        processed_ids.add(job_id)
+                        success_count += 1
+                    else:
+                        failure_count += 1
                 else:
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to save. Check logs for details.")
                     failure_count += 1
-
+                total_jobs += 1
             save_last_page(i + 1)
-
         except Exception as e:
-            logger.error(f"crawl: Error fetching job search page: {url} - {str(e)}", exc_info=True)
-            failure_count += 1
+            logger.error(f"crawl: Error processing page {i}: {str(e)}", exc_info=True)
+            break
     save_processed_ids(processed_ids)
-    logger.info(f"crawl: Completed. Total jobs processed: {total_jobs}, Successfully saved: {success_count}, Failed: {failure_count}")
-    print("\n--- Summary ---")
-    print(f"Total jobs processed: {total_jobs}")
-    print(f"Successfully saved: {success_count}")
-    print(f"Failed to save or scrape: {failure_count}")
+    logger.info(f"crawl: Crawling complete. Total jobs: {total_jobs}, Success: {success_count}, Failures: {failure_count}")
 
 def scrape_job_details(job_url, licensed):
     logger.debug(f"scrape_job_details called with job_url={job_url}, licensed={licensed}")
     try:
-        session = requests.Session()
-        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        logger.debug(f"scrape_job_details: Sending GET request to {job_url} with headers={headers}")
-        response = session.get(job_url, headers=headers, timeout=15)
+        time.sleep(random.uniform(5, 10))
+        response = requests.get(job_url, headers=headers, timeout=15)
         logger.debug(f"scrape_job_details: GET response status={response.status_code}, headers={response.headers}")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-        job_title = soup.select_one("h1.top-card-layout__title")
-        job_title = job_title.get_text().strip() if job_title else ''
-        logger.info(f"scrape_job_details: Scraped Job Title: {job_title}")
-        company_logo = ''
-        if licensed:
-            company_logo_elem = soup.select_one("img.artdeco-entity-image.artdeco-entity-image--square-5")
-            company_logo = company_logo_elem.get('src') if company_logo_elem and company_logo_elem.get('src') else ''
-            if company_logo and 'media.licdn.com' in company_logo:
-                # Remove query parameters
-                company_logo = re.sub(r'\?.*$', '', company_logo)
-                # Ensure the URL ends with .jpg
-                if not company_logo.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
-                    company_logo = f"{company_logo}.jpg"
-                # Validate the logo URL
-                try:
-                    logo_response = session.head(company_logo, headers=headers, timeout=5)
-                    content_type = logo_response.headers.get('content-type', '')
-                    if 'image' not in content_type.lower():
-                        logger.warning(f"scrape_job_details: Logo URL {company_logo} is not an image (Content-Type: {content_type})")
-                        company_logo = ''
-                    else:
-                        logger.info(f"scrape_job_details: Validated Company Logo URL: {company_logo}")
-                except Exception as e:
-                    logger.error(f"scrape_job_details: Failed to validate logo URL {company_logo}: {str(e)}")
-                    company_logo = ''
-            else:
-                logger.warning(f"scrape_job_details: Invalid or missing logo URL: {company_logo}")
-                company_logo = ''
-            logger.info(f"scrape_job_details: Scraped Company Logo URL: {company_logo}")
-        else:
-            company_logo = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set company_logo={UNLICENSED_MESSAGE}")
-        company_name = soup.select_one(".topcard__org-name-link")
-        company_name = company_name.get_text().strip() if company_name else ''
-        logger.info(f"scrape_job_details: Scraped Company Name: {company_name}")
-        company_url = ''
-        if licensed:
-            company_url_elem = soup.select_one(".topcard__org-name-link")
-            company_url = company_url_elem['href'] if company_url_elem and company_url_elem.get('href') else ''
-            if company_url:
-                company_url = re.sub(r'\?.*$', '', company_url)
-                logger.info(f"scrape_job_details: Scraped Company URL: {company_url}")
-            else:
-                logger.info(f"scrape_job_details: No Company URL found")
-        else:
-            company_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set company_url={UNLICENSED_MESSAGE}")
-        location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
-        location = location.get_text().strip() if location else 'Unknown'
-        location_parts = [part.strip() for part in location.split(',') if part.strip()]
-        location = ', '.join(dict.fromkeys(location_parts))
-        logger.info(f"scrape_job_details: Deduplicated location for {job_title}: {location}")
-        environment = ''
-        if licensed:
-            env_element = soup.select(".topcard__flavor--metadata")
-            for elem in env_element:
-                text = elem.get_text().strip().lower()
-                if 'remote' in text or 'hybrid' in text or 'on-site' in text:
-                    environment = elem.get_text().strip()
-                    break
-            logger.info(f"scrape_job_details: Scraped Environment: {environment}")
-        else:
-            environment = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set environment={UNLICENSED_MESSAGE}")
-        job_type_elem = soup.select_one(".description__job-criteria-list > li:nth-child(2) > span")
-        job_type = job_type_elem.get_text().strip() if job_type_elem else ''
-        job_type = FRENCH_TO_ENGLISH_JOB_TYPE.get(job_type, job_type)
-        logger.info(f"scrape_job_details: Scraped Type: {job_type}")
-        level = ''
-        if licensed:
-            level_elem = soup.select_one(".description__job-criteria-list > li:nth-child(1) > span")
-            level = level_elem.get_text().strip() if level_elem else ''
-            logger.info(f"scrape_job_details: Scraped Level: {level}")
-        else:
-            level = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set level={UNLICENSED_MESSAGE}")
-        job_functions = ''
-        if licensed:
-            job_functions_elem = soup.select_one(".description__job-criteria-list > li:nth-child(3) > span")
-            job_functions = job_functions_elem.get_text().strip() if job_functions_elem else ''
-            logger.info(f"scrape_job_details: Scraped Job Functions: {job_functions}")
-        else:
-            job_functions = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set job_functions={UNLICENSED_MESSAGE}")
-        industries = ''
-        if licensed:
-            industries_elem = soup.select_one(".description__job-criteria-list > li:nth-child(4) > span")
-            industries = industries_elem.get_text().strip() if industries_elem else ''
-            logger.info(f"scrape_job_details: Scraped Industries: {industries}")
-        else:
-            industries = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set industries={UNLICENSED_MESSAGE}")
-        job_description = ''
-        if licensed:
-            description_container = soup.select_one(".show-more-less-html__markup")
-            if description_container:
-                # Extract text using .get_text() with newline separator
-                raw_text = description_container.get_text(separator='\n').strip()
-                # Split into paragraphs and filter out unwanted phrases
-                unwanted_phrases = [
-                    "Never Miss a Job Update Again",
-                    "Don't Keep! Kindly Share:",
-                    "We have started building our professional LinkedIn page"
-                ]
-                paragraphs = [para.strip() for para in raw_text.split('\n\n') if para.strip()]
-                filtered_paragraphs = [
-                    para for para in paragraphs
-                    if not any(phrase.lower() in para.lower() for phrase in unwanted_phrases)
-                ]
-                seen = set()
-                unique_paragraphs = []
-                logger.debug(f"scrape_job_details: Filtered paragraphs for {job_title}: {[sanitize_text(para)[:50] for para in filtered_paragraphs]}")
-                for para in filtered_paragraphs:
-                    para = sanitize_text(para)
-                    if not para:
-                        logger.debug(f"scrape_job_details: Skipping empty paragraph for {job_title}")
-                        continue
-                    norm_para = normalize_for_deduplication(para)
-                    if norm_para and norm_para not in seen:
-                        unique_paragraphs.append(para)
-                        seen.add(norm_para)
-                        logger.debug(f"scrape_job_details: Added unique paragraph: {para[:50]}...")
-                    elif norm_para:
-                        logger.info(f"scrape_job_details: Removed duplicate paragraph for {job_title}: {para[:50]}...")
-                job_description = '\n\n'.join(unique_paragraphs)
-                # Clean up 'Show more/less' text and apply paragraph length limit
-                job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
-                job_description = split_paragraphs(job_description, max_length=200)
-                delimiter = "\n\n"
-                logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {job_description.count(delimiter) + 1}')
-            else:
-                logger.warning(f"scrape_job_details: No job description container found for {job_title}")
-        else:
-            job_description = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set job_description={UNLICENSED_MESSAGE}")
-        description_application_info = ''
-        description_application_url = ''
-        if licensed and job_description and job_description != UNLICENSED_MESSAGE:
-            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-            emails = re.findall(email_pattern, job_description)
-            if emails:
-                description_application_info = emails[0]
-                logger.info(f"scrape_job_details: Found email in job description: {description_application_info}")
-            else:
-                links = description_container.find_all('a', href=True) if description_container else []
-                for link in links:
-                    href = link['href']
-                    if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                        description_application_url = href
-                        description_application_info = href
-                        logger.info(f"scrape_job_details: Found application link in job description: {description_application_info}")
-                        break
-        else:
-            description_application_info = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set description_application_info={UNLICENSED_MESSAGE}")
-        application_url = ''
-        if licensed:
-            application_anchor = soup.select_one("#teriary-cta-container > div > a")
-            application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
-            logger.info(f"scrape_job_details: Scraped Application URL: {application_url}")
-        else:
-            application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set application_url={UNLICENSED_MESSAGE}")
-        resolved_application_info = ''
-        resolved_application_url = ''
-        if licensed and application_url and application_url != UNLICENSED_MESSAGE:
-            logger.debug(f"scrape_job_details: Following application URL: {application_url}")
+        job_title = soup.select_one(".top-card-layout__title").get_text(strip=True) if soup.select_one(".top-card-layout__title") else ""
+        company_logo = soup.select_one(".topcard__org-name-link img")['src'] if soup.select_one(".topcard__org-name-link img") else ""
+        company_name = soup.select_one(".topcard__org-name-link").get_text(strip=True) if soup.select_one(".topcard__org-name-link") else ""
+        company_url = soup.select_one(".topcard__org-name-link")['href'] if soup.select_one(".topcard__org-name-link") else ""
+        location = soup.select_one(".topcard__flavor-row .topcard__flavor--bullet").get_text(strip=True) if soup.select_one(".topcard__flavor-row .topcard__flavor--bullet") else ""
+        environment = soup.select_one(".topcard__flavor-row .topcard__flavor--metadata").get_text(strip=True) if soup.select_one(".topcard__flavor-row .topcard__flavor--metadata") else ""
+        job_description = soup.select_one(".description__text").get_text(strip=True) if soup.select_one(".description__text") else ""
+        job_description = split_paragraphs(job_description)
+        application_url = soup.select_one(".apply-button")['href'] if soup.select_one(".apply-button") else ""
+        resolved_application_url = ""
+        if application_url:
             try:
-                time.sleep(5)
-                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True)
-                logger.debug(f"scrape_job_details: Application URL GET response status={resp_app.status_code}, headers={resp_app.headers}, final_url={resp_app.url}")
-                resolved_application_url = resp_app.url
-                logger.info(f"scrape_job_details: Resolved Application URL: {resolved_application_url}")
-                app_soup = BeautifulSoup(resp_app.text, 'html.parser')
-                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                emails = re.findall(email_pattern, resp_app.text)
-                if emails:
-                    resolved_application_info = emails[0]
-                    logger.info(f"scrape_job_details: Found email in application page: {resolved_application_info}")
-                else:
-                    links = app_soup.find_all('a', href=True)
-                    for link in links:
-                        href = link['href']
-                        if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                            resolved_application_info = href
-                            logger.info(f"scrape_job_details: Found application link in application page: {resolved_application_info}")
-                            break
+                app_response = requests.get(application_url, headers=headers, timeout=15, allow_redirects=True)
+                resolved_application_url = app_response.url
             except Exception as e:
-                logger.error(f"scrape_job_details: Failed to follow application URL redirect: {str(e)}", exc_info=True)
-                error_str = str(e)
-                external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
-                if external_url_match:
-                    external_url = external_url_match.group(1)
-                    resolved_application_url = f"https://{external_url}"
-                    logger.info(f"scrape_job_details: Extracted external URL from error for application: {resolved_application_url}")
-                else:
-                    resolved_application_url = description_application_url if description_application_url else application_url
-                    logger.warning(f"scrape_job_details: No external URL found in error, using fallback: {resolved_application_url}")
-        else:
-            resolved_application_info = UNLICENSED_MESSAGE
-            resolved_application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set resolved_application_info={UNLICENSED_MESSAGE}, resolved_application_url={UNLICENSED_MESSAGE}")
-        final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
-        final_application_url = description_application_url if description_application_url else ''
-        if licensed:
-            if final_application_email and resolved_application_info and '@' in resolved_application_info:
-                final_application_email = final_application_email if final_application_email == resolved_application_info else final_application_email
-            elif resolved_application_info and '@' in resolved_application_info:
-                final_application_email = final_application_email or resolved_application_info
-                logger.debug(f"scrape_job_details: Set final_application_email={final_application_email}")
-            if description_application_url and resolved_application_url:
-                final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
-            elif resolved_application_url:
-                final_application_url = resolved_application_url
-            logger.debug(f"scrape_job_details: Set final_application_url={final_application_url}")
-        else:
-            final_application_email = UNLICENSED_MESSAGE
-            final_application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set final_application_email={UNLICENSED_MESSAGE}, final_application_url={UNLICENSED_MESSAGE}")
-        # Initialize company fields before license check
-        company_details = ''
-        company_website_url = ''
-        company_industry = ''
-        company_size = ''
-        company_headquarters = ''
-        company_type = ''
-        company_founded = ''
-        company_specialties = ''
-        company_address = ''
-        if licensed:
-            if company_url and company_url != UNLICENSED_MESSAGE:
-                logger.info(f"scrape_job_details: Fetching company page: {company_url}")
-                try:
-                    # Attempt to fetch company page with retry
-                    for attempt in range(3):  # Try three times
-                        try:
-                            company_response = session.get(company_url, headers=headers, timeout=15)
-                            logger.debug(f"scrape_job_details: Company page GET response status={company_response.status_code}, headers={company_response.headers}")
-                            company_response.raise_for_status()
-                            break
-                        except requests.exceptions.RequestException as e:
-                            logger.warning(f"scrape_job_details: Attempt {attempt + 1} failed for company page {company_url}: {str(e)}")
-                            if attempt == 2:
-                                raise
-                            time.sleep(2)
-                    company_soup = BeautifulSoup(company_response.text, 'html.parser')
-                    # Scrape company details using data-test-id
-                    company_details_elem = company_soup.select_one("p[data-test-id='about-us__description']")
-                    company_details = company_details_elem.get_text().strip() if company_details_elem else ''
-                    logger.info(f"scrape_job_details: Scraped Company Details: {company_details[:100] + '...' if company_details else ''}")
-                    # Scrape website using data-test-id
-                    website_div = company_soup.select_one("div[data-test-id='about-us__website']")
-                    company_website_anchor = website_div.select_one("dd a") if website_div else None
-                    company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
-                    logger.info(f"scrape_job_details: Scraped Company Website URL: {company_website_url}")
-                    if 'linkedin.com/redir/redirect' in company_website_url:
-                        parsed_url = urlparse(company_website_url)
-                        query_params = parse_qs(parsed_url.query)
-                        if 'url' in query_params:
-                            company_website_url = unquote(query_params['url'][0])
-                            logger.info(f"scrape_job_details: Extracted external company website from redirect: {company_website_url}")
-                        else:
-                            logger.warning(f"scrape_job_details: No 'url' param in LinkedIn redirect for {company_name}")
-                    if company_website_url and 'linkedin.com' not in company_website_url:
-                        logger.debug(f"scrape_job_details: Following company website URL: {company_website_url}")
-                        try:
-                            time.sleep(5)
-                            resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True)
-                            logger.debug(f"scrape_job_details: Company website GET response status={resp_company_web.status_code}, headers={resp_company_web.headers}, final_url={resp_company_web.url}")
-                            company_website_url = resp_company_web.url
-                            logger.info(f"scrape_job_details: Resolved Company Website URL: {company_website_url}")
-                        except Exception as e:
-                            logger.error(f"scrape_job_details: Failed to resolve company website URL: {str(e)}", exc_info=True)
-                            error_str = str(e)
-                            external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
-                            if external_url_match:
-                                external_url = external_url_match.group(1)
-                                company_website_url = f"https://{external_url}"
-                                logger.info(f"scrape_job_details: Extracted external URL from error for company website: {company_website_url}")
-                            else:
-                                logger.warning(f"scrape_job_details: No external URL found in error for {company_name}")
-                                company_website_url = ''
-                    else:
-                        if company_details:
-                            url_pattern = r'https?://(?!www\.linkedin\.com)[^\s]+'
-                            urls = re.findall(url_pattern, company_details)
-                            if urls:
-                                company_website_url = urls[0]
-                                logger.info(f"scrape_job_details: Found company website in description: {company_website_url}")
-                                try:
-                                    time.sleep(5)
-                                    resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True)
-                                    logger.debug(f"scrape_job_details: Company website description GET response status={resp_company_web.status_code}, headers={resp_company_web.headers}, final_url={resp_company_web.url}")
-                                    company_website_url = resp_company_web.url
-                                    logger.info(f"scrape_job_details: Resolved Company Website URL from description: {company_website_url}")
-                                except Exception as e:
-                                    logger.error(f"scrape_job_details: Failed to resolve company website URL from description: {str(e)}", exc_info=True)
-                                    company_website_url = ''
-                            else:
-                                logger.warning(f"scrape_job_details: No valid company website URL found in description for {company_name}")
-                                company_website_url = ''
-                        else:
-                            logger.warning(f"scrape_job_details: No company description found for {company_name}")
-                            company_website_url = ''
-                    if company_website_url and 'linkedin.com' in company_website_url:
-                        logger.warning(f"scrape_job_details: Skipping LinkedIn URL for company website: {company_website_url}")
-                        company_website_url = ''
-                    def get_company_detail(label):
-                        logger.debug(f"scrape_job_details: get_company_detail called with label={label}")
-                        div_selector = f"div[data-test-id='about-us__{label.lower()}']"
-                        detail_div = company_soup.select_one(div_selector)
-                        if detail_div:
-                            dd = detail_div.select_one("dd")
-                            value = dd.get_text().strip() if dd else ''
-                            logger.debug(f"scrape_job_details: Found {label}='{value}'")
-                            return value
-                        logger.debug(f"scrape_job_details: No {label} found with selector {div_selector}")
-                        return ''
-                    company_industry = get_company_detail("industry")
-                    logger.info(f"scrape_job_details: Scraped Company Industry: {company_industry}")
-                    company_size = get_company_detail("size")
-                    logger.info(f"scrape_job_details: Scraped Company Size: {company_size}")
-                    company_headquarters = get_company_detail("headquarters")
-                    logger.info(f"scrape_job_details: Scraped Company Headquarters: {company_headquarters}")
-                    company_type = get_company_detail("organizationType")
-                    logger.info(f"scrape_job_details: Scraped Company Type: {company_type}")
-                    company_founded = get_company_detail("foundedOn")
-                    logger.info(f"scrape_job_details: Scraped Company Founded: {company_founded}")
-                    company_specialties = get_company_detail("specialties")
-                    logger.info(f"scrape_job_details: Scraped Company Specialties: {company_specialties}")
-                    # For address, get primary location
-                    primary_li = company_soup.select_one("li span.tag-sm.tag-enabled")
-                    if primary_li:
-                        address_div = primary_li.find_next_sibling("div")
-                        if address_div:
-                            company_address = address_div.get_text(separator=', ').strip()
-                            logger.info(f"scrape_job_details: Scraped Primary Company Address: {company_address}")
-                        else:
-                            company_address = company_headquarters
-                            logger.warning(f"scrape_job_details: No address div found, using headquarters: {company_address}")
-                    else:
-                        company_address = company_headquarters
-                        logger.warning(f"scrape_job_details: No primary location found, using headquarters: {company_address}")
-                except Exception as e:
-                    logger.error(f"scrape_job_details: Error fetching company page: {company_url} - {str(e)}", exc_info=True)
-                    company_details = ''
-                    company_website_url = ''
-                    company_industry = ''
-                    company_size = ''
-                    company_headquarters = ''
-                    company_type = ''
-                    company_founded = ''
-                    company_specialties = ''
-                    company_address = ''
-        else:
-            company_details = UNLICENSED_MESSAGE
-            company_website_url = UNLICENSED_MESSAGE
-            company_industry = UNLICENSED_MESSAGE
-            company_size = UNLICENSED_MESSAGE
-            company_headquarters = UNLICENSED_MESSAGE
-            company_type = UNLICENSED_MESSAGE
-            company_founded = UNLICENSED_MESSAGE
-            company_specialties = UNLICENSED_MESSAGE
-            company_address = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set company fields to {UNLICENSED_MESSAGE}")
-        row = [
-            job_title,
-            company_logo,
-            company_name,
-            company_url,
-            location,
-            environment,
-            job_type,
-            level,
-            job_functions,
-            industries,
-            job_description,
-            job_url,
-            company_details,
-            company_website_url,
-            company_industry,
-            company_size,
-            company_headquarters,
-            company_type,
-            company_founded,
-            company_specialties,
-            company_address,
-            application_url,
-            description_application_info,
-            resolved_application_info,
-            final_application_email,
-            final_application_url,
-            resolved_application_url
+                logger.error(f"scrape_job_details: Failed to resolve application URL {application_url}: {str(e)}")
+        description_application_info = re.search(r'apply\s+to\s+([^\s@]+@[^\s@]+\.[^\s@]+)', job_description, re.IGNORECASE).group(1) if re.search(r'apply\s+to\s+([^\s@]+@[^\s@]+\.[^\s@]+)', job_description, re.IGNORECASE) else ""
+        company_website_url = ""
+        company_details = ""
+        company_industry = ""
+        company_founded = ""
+        company_type = ""
+        company_address = ""
+        if licensed and company_url:
+            try:
+                company_response = requests.get(company_url, headers=headers, timeout=15)
+                company_soup = BeautifulSoup(company_response.text, 'html.parser')
+                company_website_url = company_soup.select_one(".org-top-card-summary__website a")['href'] if company_soup.select_one(".org-top-card-summary__website a") else ""
+                company_details = company_soup.select_one(".about-us__description").get_text(strip=True) if company_soup.select_one(".about-us__description") else ""
+                company_industry = company_soup.select_one(".org-top-card-summary__industry").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__industry") else ""
+                company_founded = company_soup.select_one(".org-top-card-summary__founded").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__founded") else ""
+                company_type = company_soup.select_one(".org-top-card-summary__company-type").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__company-type") else ""
+                company_address = company_soup.select_one(".org-top-card-summary__headquarters").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__headquarters") else ""
+            except Exception as e:
+                logger.error(f"scrape_job_details: Failed to scrape company details from {company_url}: {str(e)}")
+        job_type = soup.select_one(".description__job-criteria-item:nth-child(1) .description__job-criteria-text").get_text(strip=True) if soup.select_one(".description__job-criteria-item:nth-child(1) .description__job-criteria-text") else ""
+        job_salary = soup.select_one(".description__job-criteria-item:nth-child(2) .description__job-criteria-text").get_text(strip=True) if soup.select_one(".description__job-criteria-item:nth-child(2) .description__job-criteria-text") else ""
+        return [
+            job_title, company_logo, company_name, company_url, location, environment, job_description,
+            application_url, resolved_application_url, description_application_info, company_website_url,
+            company_details, company_industry, company_founded, company_type, company_address, job_type, job_salary
         ]
-        logger.info(f"scrape_job_details: Full scraped row for job: {str(row)[:200]}...")
-        return row
     except Exception as e:
-        logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
+        logger.error(f"scrape_job_details: Failed to scrape job details from {job_url}: {str(e)}", exc_info=True)
         return None
-
-def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
-    logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
-    company_name = company_data.get("company_name", "")
-    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
-    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
-    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
-    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
-    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
-    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
-    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
-    logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
-    
-    # Check for existing company with the same logo
-    if company_logo and company_logo != UNLICENSED_MESSAGE:
-        try:
-            # Query WordPress for companies with the same logo
-            response = requests.get(
-                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
-                headers=wp_headers,
-                timeout=15
-            )
-            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
-            response.raise_for_status()
-            companies = response.json()
-            if companies:
-                # Found an existing company with the same logo
-                company_id = companies[0].get('id')
-                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
-                return company_id, f"Company with logo {company_logo} already exists"
-        except Exception as e:
-            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
-            # Continue to save the company if the check fails
-    
-    company_id = generate_id(company_name)
-    post_data = {
-        "company_id": company_id,
-        "company_name": sanitize_text(company_name),
-        "company_details": company_details,
-        "company_logo": sanitize_text(company_logo, is_url=True),
-        "company_website": sanitize_text(company_website, is_url=True),
-        "company_industry": sanitize_text(company_industry),
-        "company_founded": sanitize_text(company_founded),
-        "company_type": sanitize_text(company_type),
-        "company_address": sanitize_text(company_address),
-        "company_tagline": sanitize_text(company_details),
-        "company_twitter": "",
-        "company_video": ""
-    }
-    logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
-    response = None
-    try:
-        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
-        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
-        response.raise_for_status()
-        post = response.json()
-        if post['success']:
-            logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
-            return post.get("id"), post.get("message")
-        else:
-            logger.info(f"save_company_to_wordpress: Company {company_name} skipped: {post.get('message')}")
-            return post.get("id"), post.get("message")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
-        return None, None
-
-def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
-    logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
-    company_name = company_data.get("company_name", "")
-    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
-    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
-    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
-    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
-    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
-    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
-    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
-    logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
-    
-    # Check for existing company with the same logo
-    if company_logo and company_logo != UNLICENSED_MESSAGE:
-        try:
-            # Query WordPress for companies with the same logo
-            response = requests.get(
-                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
-                headers=wp_headers,
-                timeout=15
-            )
-            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
-            response.raise_for_status()
-            companies = response.json()
-            if companies:
-                # Found an existing company with the same logo
-                company_id = companies[0].get('id')
-                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
-                return company_id, f"Company with logo {company_logo} already exists"
-        except Exception as e:
-            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
-            # Continue to save the company if the check fails
-    
-    company_id = generate_id(company_name)
-    post_data = {
-        "company_id": company_id,
-        "company_name": sanitize_text(company_name),
-        "company_details": company_details,
-        "company_logo": sanitize_text(company_logo, is_url=True),
-        "company_website": sanitize_text(company_website, is_url=True),
-        "company_industry": sanitize_text(company_industry),
-        "company_founded": sanitize_text(company_founded),
-        "company_type": sanitize_text(company_type),
-        "company_address": sanitize_text(company_address),
-        "company_tagline": sanitize_text(company_details),
-        "company_twitter": "",
-        "company_video": ""
-    }
-    logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
-    response = None
-    try:
-        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
-        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
-        response.raise_for_status()
-        post = response.json()
-        if post['success']:
-            logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
-            return post.get("id"), post.get("message")
-        else:
-            logger.info(f"save_company_to_wordpress: Company {company_name} skipped: {post.get('message')}")
-            return post.get("id"), post.get("message")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
-        return None, None
-
-def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
-    logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
-    company_name = company_data.get("company_name", "")
-    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
-    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
-    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
-    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
-    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
-    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
-    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
-    logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
-    
-    # Check for existing company with the same logo
-    if company_logo and company_logo != UNLICENSED_MESSAGE:
-        try:
-            # Query WordPress for companies with the same logo
-            response = requests.get(
-                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
-                headers=wp_headers,
-                timeout=15
-            )
-            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
-            response.raise_for_status()
-            companies = response.json()
-            if companies:
-                # Found an existing company with the same logo
-                company_id = companies[0].get('id')
-                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
-                return company_id, f"Company with logo {company_logo} already exists"
-        except Exception as e:
-            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
-            # Continue to save the company if the check fails
-    
-    company_id = generate_id(company_name)
-    post_data = {
-        "company_id": company_id,
-        "company_name": sanitize_text(company_name),
-        "company_details": company_details,
-        "company_logo": sanitize_text(company_logo, is_url=True),
-        "company_website": sanitize_text(company_website, is_url=True),
-        "company_industry": sanitize_text(company_industry),
-        "company_founded": sanitize_text(company_founded),
-        "company_type": sanitize_text(company_type),
-        "company_address": sanitize_text(company_address),
-        "company_tagline": sanitize_text(company_details),
-        "company_twitter": "",
-        "company_video": ""
-    }
-    logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
-    response = None
-    try:
-        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
-        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
-        response.raise_for_status()
-        post = response.json()
-        if post['success']:
-            logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
-            return post.get("id"), post.get("message")
-        else:
-            logger.info(f"save_company_to_wordpress: Company {company_name} skipped: {post.get('message')}")
-            return post.get("id"), post.get("message")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
-        return None, None
-
-def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
-    logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
-    company_name = company_data.get("company_name", "")
-    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
-    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
-    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
-    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
-    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
-    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
-    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
-    logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
-    
-    # Check for existing company with the same logo
-    if company_logo and company_logo != UNLICENSED_MESSAGE:
-        try:
-            # Query WordPress for companies with the same logo
-            response = requests.get(
-                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
-                headers=wp_headers,
-                timeout=15
-            )
-            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
-            response.raise_for_status()
-            companies = response.json()
-            if companies:
-                # Found an existing company with the same logo
-                company_id = companies[0].get('id')
-                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
-                return company_id, f"Company with logo {company_logo} already exists"
-        except Exception as e:
-            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
-            # Continue to save the company if the check fails
-    
-    company_id = generate_id(company_name)
-    post_data = {
-        "company_id": company_id,
-        "company_name": sanitize_text(company_name),
-        "company_details": company_details,
-        "company_logo": sanitize_text(company_logo, is_url=True),
-        "company_website": sanitize_text(company_website, is_url=True),
-        "company_industry": sanitize_text(company_industry),
-        "company_founded": sanitize_text(company_founded),
-        "company_type": sanitize_text(company_type),
-        "company_address": sanitize_text(company_address),
-        "company_tagline": sanitize_text(company_details),
-        "company_twitter": "",
-        "company_video": ""
-    }
-    logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
-    response = None
-    try:
-        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
-        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
-        response.raise_for_status()
-        post = response.json()
-        if post['success']:
-            logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
-            return post.get("id"), post.get("message")
-        else:
-            logger.info(f"save_company_to_wordpress: Company {company_name} skipped: {post.get('message')}")
-            return post.get("id"), post.get("message")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
-        return None, None
-
-def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls):
-    logger.debug(f"save_company_to_wordpress called with index={index}, company_data={json.dumps(company_data, indent=2)[:200]}..., licensed={licensed}")
-    company_name = company_data.get("company_name", "")
-    company_details = company_data.get("company_details", UNLICENSED_MESSAGE if not licensed else "")
-    company_logo = company_data.get("company_logo", UNLICENSED_MESSAGE if not licensed else "")
-    company_website = company_data.get("company_website_url", UNLICENSED_MESSAGE if not licensed else "")
-    company_industry = company_data.get("company_industry", UNLICENSED_MESSAGE if not licensed else "")
-    company_founded = company_data.get("company_founded", UNLICENSED_MESSAGE if not licensed else "")
-    company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
-    company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
-    logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
-    
-    # Check for existing company with the same logo
-    if company_logo and company_logo != UNLICENSED_MESSAGE:
-        try:
-            # Query WordPress for companies with the same logo
-            response = requests.get(
-                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
-                headers=wp_headers,
-                timeout=15
-            )
-            logger.debug(f"save_company_to_wordpress: GET response for logo check status={response.status_code}, headers={response.headers}")
-            response.raise_for_status()
-            companies = response.json()
-            if companies:
-                # Found an existing company with the same logo
-                company_id = companies[0].get('id')
-                logger.info(f"save_company_to_wordpress: Found existing company with logo {company_logo}: ID {company_id}")
-                return company_id, f"Company with logo {company_logo} already exists"
-        except Exception as e:
-            logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
-            # Continue to save the company if the check fails
-    
-    company_id = generate_id(company_name)
-    post_data = {
-        "company_id": company_id,
-        "company_name": sanitize_text(company_name),
-        "company_details": company_details,
-        "company_logo": sanitize_text(company_logo, is_url=True),
-        "company_website": sanitize_text(company_website, is_url=True),
-        "company_industry": sanitize_text(company_industry),
-        "company_founded": sanitize_text(company_founded),
-        "company_type": sanitize_text(company_type),
-        "company_address": sanitize_text(company_address),
-        "company_tagline": sanitize_text(company_details),
-        "company_twitter": "",
-        "company_video": ""
-    }
-    logger.debug(f"save_company_to_wordpress: Prepared post_data={json.dumps(post_data, indent=2)[:200]}...")
-    response = None
-    try:
-        response = requests.post(wp_urls["WP_SAVE_COMPANY_URL"], json=post_data, headers=wp_headers, timeout=15)
-        logger.debug(f"save_company_to_wordpress: POST response status={response.status_code}, headers={response.headers}, body={response.text[:200]}")
-        response.raise_for_status()
-        post = response.json()
-        if post['success']:
-            logger.info(f"save_company_to_wordpress: Successfully saved company {company_name}: ID {post.get('id')}, Message {post.get('message')}")
-            return post.get("id"), post.get("message")
-        else:
-            logger.info(f"save_company_to_wordpress: Company {company_name} skipped: {post.get('message')}")
-            return post.get("id"), post.get("message")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"save_company_to_wordpress: Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}", exc_info=True)
-        return None, None
 
 def main():
     logger.debug("main: Starting execution")
@@ -1205,9 +517,21 @@ def main():
         logger.debug(f"main: GET response for credentials status={response.status_code}, headers={response.headers}")
         response.raise_for_status()
         credentials = response.json()
-        wp_username = credentials.get('wp_username', wp_username)
-        wp_app_password = credentials.get('wp_app_password', wp_app_password)
-        logger.debug(f"main: Fetched WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
+        if not credentials.get('success', False):
+            logger.warning(f"main: Credentials endpoint returned failure: {credentials.get('message', 'Unknown error')}")
+            print(f"Warning: Credentials endpoint returned failure: {credentials.get('message', 'Unknown error')}. Using command-line credentials.")
+        else:
+            wp_username = credentials.get('wp_username', wp_username)
+            wp_app_password = credentials.get('wp_app_password', wp_app_password)
+            logger.debug(f"main: Fetched WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            logger.error(f"main: Endpoint not found. Check plugin activation and namespace.")
+            print("Error: Credentials endpoint not found (404). Ensure the plugin is activated and the namespace is 'mimus_job_fetcher/v1'.")
+        else:
+            logger.error(f"main: Failed to fetch credentials: {str(e)}", exc_info=True)
+            print(f"Error: Failed to fetch credentials: {str(e)}")
+        return  # Or continue with command-line creds
     except Exception as e:
         logger.error(f"main: Failed to fetch credentials from {wp_urls['WP_CREDENTIALS_URL']}: {str(e)}", exc_info=True)
         print(f"Error: Failed to fetch WordPress credentials from {wp_urls['WP_CREDENTIALS_URL']}. Check site URL, credentials, and server configuration.")
