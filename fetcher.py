@@ -156,13 +156,12 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls
     company_type = company_data.get("company_type", UNLICENSED_MESSAGE if not licensed else "")
     company_address = company_data.get("company_address", UNLICENSED_MESSAGE if not licensed else "")
     logger.debug(f"save_company_to_wordpress: Extracted company fields: name='{company_name}', details='{company_details[:50]}...', logo='{company_logo}', website='{company_website}', industry='{company_industry}', founded='{company_founded}', type='{company_type}', address='{company_address}'")
-    
     # Check for existing company with the same logo
     if company_logo and company_logo != UNLICENSED_MESSAGE:
         try:
             # Query WordPress for companies with the same logo
             response = requests.get(
-                f"{wp_urls['WP_COMPANY_URL']}?meta_key=company_logo&meta_value={company_logo}",
+                f"{wp_urls['WP_COMPANY_URL']}?meta_key=_company_logo&meta_value={company_logo}",
                 headers=wp_headers,
                 timeout=15
             )
@@ -177,7 +176,6 @@ def save_company_to_wordpress(index, company_data, wp_headers, licensed, wp_urls
         except Exception as e:
             logger.error(f"save_company_to_wordpress: Failed to check for existing company with logo {company_logo}: {str(e)}")
             # Continue to save the company if the check fails
-    
     company_id = generate_id(company_name)
     post_data = {
         "company_id": company_id,
@@ -367,106 +365,67 @@ def crawl(auth_headers, processed_ids, licensed, country, keyword, wp_urls):
                     "company_url": job_data[3],
                     "location": job_data[4],
                     "environment": job_data[5],
-                    "job_description": job_data[6],
-                    "job_url": job_url,
-                    "application_url": job_data[7],
-                    "resolved_application_url": job_data[8],
-                    "description_application_info": job_data[9],
-                    "company_website_url": job_data[10],
-                    "company_details": job_data[11],
-                    "company_industry": job_data[12],
-                    "company_founded": job_data[13],
-                    "company_type": job_data[14],
-                    "company_address": job_data[15],
-                    "job_type": job_data[16],
-                    "job_salary": job_data[17]
                 }
-                normalized_title = normalize_for_deduplication(job_dict["job_title"])
-                normalized_company = normalize_for_deduplication(job_dict["company_name"])
-                job_id = generate_id(normalized_title + normalized_company)
-                if job_id in processed_ids:
-                    logger.info(f"crawl: Job {job_id} already processed, skipping")
-                    continue
-                company_data = {
-                    "company_name": job_dict["company_name"],
-                    "company_details": job_dict["company_details"],
-                    "company_logo": job_dict["company_logo"],
-                    "company_website_url": job_dict["company_website_url"],
-                    "company_industry": job_dict["company_industry"],
-                    "company_founded": job_dict["company_founded"],
-                    "company_type": job_dict["company_type"],
-                    "company_address": job_dict["company_address"]
-                }
-                company_id, company_message = save_company_to_wordpress(index, company_data, auth_headers, licensed, wp_urls)
-                if company_id:
-                    job_id_saved, job_message = save_article_to_wordpress(index, job_dict, company_id, auth_headers, licensed, wp_urls)
-                    if job_id_saved:
-                        processed_ids.add(job_id)
-                        success_count += 1
-                    else:
-                        failure_count += 1
-                else:
-                    failure_count += 1
-                total_jobs += 1
-            save_last_page(i + 1)
-        except Exception as e:
-            logger.error(f"crawl: Error processing page {i}: {str(e)}", exc_info=True)
-            break
+        except requests.exceptions.RequestException as e:
+            logger.error(f"crawl: Failed to fetch page {i}: {str(e)}", exc_info=True)
+            failure_count += 1
+            continue
+        total_jobs += len(urls)
+        save_last_page(i + 1)
+    logger.info(f"crawl: Processed {total_jobs} jobs, {success_count} successful, {failure_count} failed")
     save_processed_ids(processed_ids)
-    logger.info(f"crawl: Crawling complete. Total jobs: {total_jobs}, Success: {success_count}, Failures: {failure_count}")
 
 def scrape_job_details(job_url, licensed):
     logger.debug(f"scrape_job_details called with job_url={job_url}, licensed={licensed}")
     try:
-        time.sleep(random.uniform(5, 10))
-        response = requests.get(job_url, headers=headers, timeout=15)
+        session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        response = session.get(job_url, headers=headers, timeout=15)
         logger.debug(f"scrape_job_details: GET response status={response.status_code}, headers={response.headers}")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-        job_title = soup.select_one(".top-card-layout__title").get_text(strip=True) if soup.select_one(".top-card-layout__title") else ""
-        company_logo = soup.select_one(".topcard__org-name-link img")['src'] if soup.select_one(".topcard__org-name-link img") else ""
-        company_name = soup.select_one(".topcard__org-name-link").get_text(strip=True) if soup.select_one(".topcard__org-name-link") else ""
-        company_url = soup.select_one(".topcard__org-name-link")['href'] if soup.select_one(".topcard__org-name-link") else ""
-        location = soup.select_one(".topcard__flavor-row .topcard__flavor--bullet").get_text(strip=True) if soup.select_one(".topcard__flavor-row .topcard__flavor--bullet") else ""
-        environment = soup.select_one(".topcard__flavor-row .topcard__flavor--metadata").get_text(strip=True) if soup.select_one(".topcard__flavor-row .topcard__flavor--metadata") else ""
-        job_description = soup.select_one(".description__text").get_text(strip=True) if soup.select_one(".description__text") else ""
-        job_description = split_paragraphs(job_description)
-        application_url = soup.select_one(".apply-button")['href'] if soup.select_one(".apply-button") else ""
-        resolved_application_url = ""
-        if application_url:
-            try:
-                app_response = requests.get(application_url, headers=headers, timeout=15, allow_redirects=True)
-                resolved_application_url = app_response.url
-            except Exception as e:
-                logger.error(f"scrape_job_details: Failed to resolve application URL {application_url}: {str(e)}")
-        description_application_info = re.search(r'apply\s+to\s+([^\s@]+@[^\s@]+\.[^\s@]+)', job_description, re.IGNORECASE).group(1) if re.search(r'apply\s+to\s+([^\s@]+@[^\s@]+\.[^\s@]+)', job_description, re.IGNORECASE) else ""
-        company_website_url = ""
-        company_details = ""
-        company_industry = ""
-        company_founded = ""
-        company_type = ""
-        company_address = ""
-        if licensed and company_url:
-            try:
-                company_response = requests.get(company_url, headers=headers, timeout=15)
-                company_soup = BeautifulSoup(company_response.text, 'html.parser')
-                company_website_url = company_soup.select_one(".org-top-card-summary__website a")['href'] if company_soup.select_one(".org-top-card-summary__website a") else ""
-                company_details = company_soup.select_one(".about-us__description").get_text(strip=True) if company_soup.select_one(".about-us__description") else ""
-                company_industry = company_soup.select_one(".org-top-card-summary__industry").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__industry") else ""
-                company_founded = company_soup.select_one(".org-top-card-summary__founded").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__founded") else ""
-                company_type = company_soup.select_one(".org-top-card-summary__company-type").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__company-type") else ""
-                company_address = company_soup.select_one(".org-top-card-summary__headquarters").get_text(strip=True) if company_soup.select_one(".org-top-card-summary__headquarters") else ""
-            except Exception as e:
-                logger.error(f"scrape_job_details: Failed to scrape company details from {company_url}: {str(e)}")
-        job_type = soup.select_one(".description__job-criteria-item:nth-child(1) .description__job-criteria-text").get_text(strip=True) if soup.select_one(".description__job-criteria-item:nth-child(1) .description__job-criteria-text") else ""
-        job_salary = soup.select_one(".description__job-criteria-item:nth-child(2) .description__job-criteria-text").get_text(strip=True) if soup.select_one(".description__job-criteria-item:nth-child(2) .description__job-criteria-text") else ""
-        return [
-            job_title, company_logo, company_name, company_url, location, environment, job_description,
-            application_url, resolved_application_url, description_application_info, company_website_url,
-            company_details, company_industry, company_founded, company_type, company_address, job_type, job_salary
-        ]
+        
+        job_title = soup.select_one("h1.topcard__title") or soup.select_one("h1")
+        job_title = sanitize_text(job_title.get_text()) if job_title else "Unknown"
+        
+        company_name = soup.select_one(".topcard__org-name") or soup.select_one(".company-name")
+        company_name = sanitize_text(company_name.get_text()) if company_name else "Unknown"
+        
+        company_logo = soup.select_one(".topcard__org-logo img")
+        company_logo = sanitize_text(company_logo['src'], is_url=True) if company_logo else ""
+        
+        company_url = soup.select_one(".topcard__org-name a")
+        company_url = sanitize_text(company_url['href'], is_url=True) if company_url else ""
+        
+        location = soup.select_one(".topcard__flavor--location")
+        location = sanitize_text(location.get_text()) if location else "Unknown"
+        
+        environment = soup.select_one(".topcard__flavor--workplace-type")
+        environment = sanitize_text(environment.get_text()) if environment else "Unknown"
+        
+        job_data = [job_title, company_logo, company_name, company_url, location, environment]
+        
+        if licensed:
+            description = soup.select_one(".description__text")
+            job_data.append(sanitize_text(description.get_text()) if description else "")
+            salary = soup.select_one(".salary-info")
+            job_data.append(sanitize_text(salary.get_text()) if salary else "")
+            application_info = soup.select_one(".application-info")
+            job_data.append(sanitize_text(application_info.get_text()) if application_info else "")
+            company_details = soup.select_one(".company-details")
+            job_data.append(sanitize_text(company_details.get_text()) if company_details else "")
+            company_industry = soup.select_one(".company-industry")
+            job_data.append(sanitize_text(company_industry.get_text()) if company_industry else "")
+            company_founded = soup.select_one(".company-founded")
+            job_data.append(sanitize_text(company_founded.get_text()) if company_founded else "")
+        else:
+            job_data.extend(["", "", "", "", "", ""])
+        
+        logger.debug(f"scrape_job_details: Scraped data={job_data}")
+        return job_data
     except Exception as e:
-        logger.error(f"scrape_job_details: Failed to scrape job details from {job_url}: {str(e)}", exc_info=True)
+        logger.error(f"scrape_job_details: Failed to scrape {job_url}: {str(e)}", exc_info=True)
         return None
 
 def main():
@@ -517,21 +476,9 @@ def main():
         logger.debug(f"main: GET response for credentials status={response.status_code}, headers={response.headers}")
         response.raise_for_status()
         credentials = response.json()
-        if not credentials.get('success', False):
-            logger.warning(f"main: Credentials endpoint returned failure: {credentials.get('message', 'Unknown error')}")
-            print(f"Warning: Credentials endpoint returned failure: {credentials.get('message', 'Unknown error')}. Using command-line credentials.")
-        else:
-            wp_username = credentials.get('wp_username', wp_username)
-            wp_app_password = credentials.get('wp_app_password', wp_app_password)
-            logger.debug(f"main: Fetched WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            logger.error(f"main: Endpoint not found. Check plugin activation and namespace.")
-            print("Error: Credentials endpoint not found (404). Ensure the plugin is activated and the namespace is 'mimus_job_fetcher/v1'.")
-        else:
-            logger.error(f"main: Failed to fetch credentials: {str(e)}", exc_info=True)
-            print(f"Error: Failed to fetch credentials: {str(e)}")
-        return  # Or continue with command-line creds
+        wp_username = credentials.get('wp_username', wp_username)
+        wp_app_password = credentials.get('wp_app_password', wp_app_password)
+        logger.debug(f"main: Fetched WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
     except Exception as e:
         logger.error(f"main: Failed to fetch credentials from {wp_urls['WP_CREDENTIALS_URL']}: {str(e)}", exc_info=True)
         print(f"Error: Failed to fetch WordPress credentials from {wp_urls['WP_CREDENTIALS_URL']}. Check site URL, credentials, and server configuration.")
