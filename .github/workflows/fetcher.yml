@@ -52,7 +52,7 @@ jobs:
           COUNTRY: ${{ inputs.country }}
           KEYWORD: ${{ inputs.keyword }}
         run: |
-          python fetcher.py "${{ inputs.license_key }}" "${{ inputs.country }}" "${{ inputs.keyword }}" "${{ inputs.wp_site_url }}" "${{ inputs.wp_username }}" "${{ inputs.wp_app_password }}" || echo "Fetcher failed; check logs"
+          python fetcher.py "${{ inputs.license_key }}" "${{ inputs.country }}" "${{ inputs.keyword }}" "${{ inputs.wp_site_url }}" "${{ inputs.wp_username }}" "${{ inputs.wp_app_password }}"
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
