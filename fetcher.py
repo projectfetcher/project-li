@@ -13,7 +13,7 @@ from urllib3.util.retry import Retry
 import os
 import sys
 import traceback
-import nltk
+pip install nltk
 import language_tool_python
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
