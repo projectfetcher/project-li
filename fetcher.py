@@ -802,7 +802,7 @@ def main():
     logger.debug("main: Starting execution")
     # Check license key, country, keyword, site_url, wp_username, wp_app_password from command-line arguments
     license_key = sys.argv[1] if len(sys.argv) > 1 else ""
-    country = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2].strip() else "Mauritius"  # Only default to Mauritius if no valid input
+    country = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2].strip() else ""
     keyword = sys.argv[3] if len(sys.argv) > 3 else ""
     site_url = sys.argv[4] if len(sys.argv) > 4 else "https://mauritius.mimusjobs.com"
     wp_username = sys.argv[5] if len(sys.argv) > 5 else ""
