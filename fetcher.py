@@ -34,7 +34,7 @@ headers = {
 }
 logger.debug(f"Initialized HTTP headers: {headers}")
 
-# Constants for WordPress (using site_url from command-line arguments)
+# Constants for WordPress (site_url will be fetched dynamically)
 def get_wp_urls(site_url):
     return {
         "WP_URL": f"{site_url}/wp-json/wp/v2/job-listings",
@@ -711,21 +711,14 @@ def scrape_job_details(job_url, licensed):
 
 def main():
     logger.debug("main: Starting execution")
-    # Check license key, country, keyword, site_url, wp_username, wp_app_password from environment variables (for GitHub Actions compatibility)
+    # Check license key, country, keyword, wp_username, wp_app_password from environment variables
     license_key = os.environ.get('LICENSE_KEY', '')
     country = os.environ.get('COUNTRY', 'Unknown')
     keyword = os.environ.get('KEYWORD', '')
-    site_url = os.environ.get('SITE_URL', '')
     wp_username = os.environ.get('WP_USERNAME', '')
     wp_app_password = os.environ.get('WP_APP_PASSWORD', '')
-    logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, Site URL: {site_url}, WP Username: {wp_username}, WP App Password: {'*' * len(wp_app_password) if wp_app_password else 'None'}")
-    
-    # Validate site_url
-    if not site_url or not site_url.startswith(('http://', 'https://')):
-        logger.error("main: Invalid or missing site_url. Please provide a valid WordPress site URL (e.g., https://example.com)")
-        print("Error: Invalid or missing site_url. Please provide a valid WordPress site URL (e.g., https://example.com)")
-        return
-    
+    logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, WP Username: {wp_username}, WP App Password: {'*' * len(wp_app_password) if wp_app_password else 'None'}")
+
     licensed = license_key == VALID_LICENSE_KEY
     if not licensed:
         logger.warning("main: No valid license key provided. Scraping limited data.")
@@ -733,11 +726,11 @@ def main():
     else:
         logger.info("main: Valid license key provided. Scraping full job data.")
         print("Valid license key provided. Scraping full job data.")
-    
-    # Get WordPress API URLs using site_url
-    wp_urls = get_wp_urls(site_url)
-    logger.debug(f"main: WordPress endpoints: {wp_urls}")
 
+    # Temporary site_url for fetching credentials (use a placeholder or default, will be updated)
+    temp_site_url = 'https://example.com'  # Placeholder, will be replaced
+    wp_urls = get_wp_urls(temp_site_url)
+    
     # Prepare authentication headers for credentials request
     if wp_username and wp_app_password:
         auth_string = f"{wp_username}:{wp_app_password}"
@@ -751,19 +744,30 @@ def main():
         auth_headers = headers
         logger.warning("main: No WP username or app password provided; attempting unauthenticated request to credentials endpoint")
 
-    # Fetch WordPress credentials from plugin endpoint
+    # Fetch WordPress credentials and site_url from plugin endpoint
     try:
         response = requests.get(wp_urls["WP_CREDENTIALS_URL"], headers=auth_headers, timeout=15)
         logger.debug(f"main: GET response for credentials status={response.status_code}, headers={response.headers}")
         response.raise_for_status()
         credentials = response.json()
+        site_url = credentials.get('site_url', '')
         wp_username = credentials.get('wp_username', wp_username)
         wp_app_password = credentials.get('wp_app_password', wp_app_password)
-        logger.debug(f"main: Fetched WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
+        logger.debug(f"main: Fetched site_url={site_url}, WP Username={wp_username}, WP App Password={'*' * len(wp_app_password)}")
     except Exception as e:
         logger.error(f"main: Failed to fetch credentials from {wp_urls['WP_CREDENTIALS_URL']}: {str(e)}", exc_info=True)
-        print(f"Error: Failed to fetch WordPress credentials from {wp_urls['WP_CREDENTIALS_URL']}. Check site URL, credentials, and server configuration.")
+        print(f"Error: Failed to fetch WordPress credentials and site_url from {wp_urls['WP_CREDENTIALS_URL']}. Check credentials and server configuration.")
         return
+
+    # Validate site_url
+    if not site_url or not site_url.startswith(('http://', 'https://')):
+        logger.error("main: Invalid or missing site_url from plugin input. Please provide a valid WordPress site URL in the plugin settings.")
+        print("Error: Invalid or missing site_url from plugin input. Please provide a valid WordPress site URL in the plugin settings.")
+        return
+
+    # Update wp_urls with the fetched site_url
+    wp_urls = get_wp_urls(site_url)
+    logger.debug(f"main: Updated WordPress endpoints: {wp_urls}")
 
     # Prepare headers for subsequent requests
     auth_string = f"{wp_username}:{wp_app_password}"
