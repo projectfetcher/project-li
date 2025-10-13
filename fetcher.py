@@ -20,6 +20,33 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from sentence_transformers import SentenceTransformer, util
 import warnings
 
+
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+import base64
+import time
+import re
+import hashlib
+import nltk
+from requests.exceptions import RequestException
+import json
+import os
+from datetime import datetime, timedelta
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import warnings
+import logging
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from sentence_transformers import SentenceTransformer, util
+import language_tool_python
+import torch
+from huggingface_hub import login
+
+
+
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
 
