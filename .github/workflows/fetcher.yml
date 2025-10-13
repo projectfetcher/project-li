@@ -29,17 +29,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 urllib3
+          pip install requests beautifulsoup4 urllib3 python-dotenv nltk torch transformers sentence-transformers language-tool-python
+
+      - name: Download NLTK data
+        run: |
+          python -m nltk.downloader punkt_tab averaged_perceptron_tagger
+
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-huggingface-${{ hashFiles('fetcher.py') }}
+          restore-keys: |
+            ${{ runner.os }}-huggingface-
 
       - name: Run fetcher
         env:
@@ -48,4 +60,5 @@ jobs:
           WP_APP_PASSWORD: ${{ inputs.wp_app_password }}
           COUNTRY: ${{ inputs.country }}
           KEYWORD: ${{ inputs.keyword }}
+          FETCHER_TOKEN: ${{ inputs.license_key }}
         run: python fetcher.py "${{ inputs.license_key }}"
