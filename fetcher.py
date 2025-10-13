@@ -1448,7 +1448,7 @@ def scrape_job_details(job_url, licensed):
             logger.debug(f"scrape_job_details: Unlicensed, set job_description={UNLICENSED_MESSAGE}")
         description_application_info = ''
         description_application_url = ''
-        if licensed and job_description and job_description != UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
+        if licensed and job_description and job_description != UNLICENSED_MESSAGE:
             # Extract application information from job description
             email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
             url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
