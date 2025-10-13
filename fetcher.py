@@ -728,7 +728,7 @@ def main():
         print("Valid license key provided. Scraping full job data.")
 
     # Temporary site_url for fetching credentials (use a placeholder or default, will be updated)
-    temp_site_url = 'https://example.com'  # Placeholder, will be replaced
+    temp_site_url = 'https://mauritius.mimusjobs.com'  # Placeholder, will be replaced
     wp_urls = get_wp_urls(temp_site_url)
     
     # Prepare authentication headers for credentials request
