@@ -1,64 +1,78 @@
-name: Job Fetcher
-
+name: Job Fetcher Service
 on:
   workflow_dispatch:
     inputs:
       country:
-        description: 'Country for job search (e.g., United States)'
+        description: 'Country for job search'
         required: true
+        default: 'Worldwide'
+        type: string
       keyword:
-        description: 'Optional keyword for job search (e.g., software engineer)'
+        description: 'Keyword for job search (optional)'
         required: false
         default: ''
+        type: string
       wp_site_url:
-        description: 'WordPress site URL (e.g., https://example.com)'
+        description: 'WordPress Site URL'
         required: true
+        type: string
       wp_username:
-        description: 'WordPress username for REST API authentication'
+        description: 'WordPress Username'
         required: true
+        type: string
       wp_app_password:
-        description: 'WordPress application password for REST API authentication'
+        description: 'WordPress Application Password'
         required: true
+        type: string
       license_key:
-        description: 'License key for fetcher.py (optional)'
+        description: 'License Key for Full Data Access'
         required: false
         default: ''
+        type: string
 
 jobs:
   fetch-jobs:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 urllib3 python-dotenv nltk torch transformers sentence-transformers language-tool-python
-
-      - name: Download NLTK data
-        run: |
-          python -m nltk.downloader punkt_tab averaged_perceptron_tagger
-
-      - name: Cache Hugging Face models
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: ${{ runner.os }}-huggingface-${{ hashFiles('fetcher.py') }}
-          restore-keys: |
-            ${{ runner.os }}-huggingface-
-
-      - name: Run fetcher
-        env:
-          WP_SITE_URL: ${{ inputs.wp_site_url }}
-          WP_USERNAME: ${{ inputs.wp_username }}
-          WP_APP_PASSWORD: ${{ inputs.wp_app_password }}
-          COUNTRY: ${{ inputs.country }}
-          KEYWORD: ${{ inputs.keyword }}
-          FETCHER_TOKEN: ${{ inputs.license_key }}
-        run: python fetcher.py "${{ inputs.license_key }}"
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 lxml urllib3
+        
+    - name: Create uploads directory
+      run: mkdir -p uploads
+      
+    - name: Run Job Fetcher
+      env:
+        WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
+        WP_USERNAME: ${{ github.event.inputs.wp_username }}
+        WP_APP_PASSWORD: ${{ github.event.inputs.wp_app_password }}
+        COUNTRY: ${{ github.event.inputs.country }}
+        KEYWORD: ${{ github.event.inputs.keyword }}
+        LICENSE_KEY: ${{ github.event.inputs.license_key }}
+      run: |
+        echo "Starting job fetcher..."
+        echo "Country: ${{ github.event.inputs.country }}"
+        echo "Keyword: '${{ github.event.inputs.keyword }}'"
+        echo "Site URL: ${{ github.event.inputs.wp_site_url }}"
+        echo "License key: ${LICENSE_KEY:0:8}..." # Show first 8 chars
+        python fetcher.py
+        
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: fetcher-logs
+        path: |
+          uploads/fetcher.log
+          uploads/*.json
