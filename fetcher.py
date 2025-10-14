@@ -52,7 +52,7 @@ WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-job"
 WP_FETCHER_STATUS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-status"
 WP_CREDENTIALS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-credentials"
 
-PROCESSED_IDS_FILE = "processed_job_ids.csv"
+PROCESSED_IDS_FILE = "processed_job_ids.json"
 LAST_PAGE_FILE = "last_processed_page.txt"
 
 JOB_TYPE_MAPPING = {
@@ -316,13 +316,28 @@ def scrape_job_details(job_url, licensed):
         job_type = FRENCH_TO_ENGLISH_JOB_TYPE.get(job_type, job_type)
         
         # Licensed data
-        company_logo = UNLICENSED_MESSAGE if not licensed else ''
-        company_url = UNLICENSED_MESSAGE if not licensed else ''
-        environment = UNLICENSED_MESSAGE if not licensed else ''
-        level = UNLICENSED_MESSAGE if not licensed else ''
-        job_functions = UNLICENSED_MESSAGE if not licensed else ''
-        industries = UNLICENSED_MESSAGE if not licensed else ''
-        job_description = UNLICENSED_MESSAGE if not licensed else ''
+        company_logo = UNLICENSED_MESSAGE
+        company_url = UNLICENSED_MESSAGE
+        environment = UNLICENSED_MESSAGE
+        level = UNLICENSED_MESSAGE
+        job_functions = UNLICENSED_MESSAGE
+        industries = UNLICENSED_MESSAGE
+        job_description = UNLICENSED_MESSAGE
+        application_url = UNLICENSED_MESSAGE
+        description_application_info = UNLICENSED_MESSAGE
+        resolved_application_info = UNLICENSED_MESSAGE
+        final_application_email = UNLICENSED_MESSAGE
+        final_application_url = UNLICENSED_MESSAGE
+        resolved_application_url = UNLICENSED_MESSAGE
+        company_details = UNLICENSED_MESSAGE
+        company_website_url = UNLICENSED_MESSAGE
+        company_industry = UNLICENSED_MESSAGE
+        company_size = UNLICENSED_MESSAGE
+        company_headquarters = UNLICENSED_MESSAGE
+        company_type = UNLICENSED_MESSAGE
+        company_founded = UNLICENSED_MESSAGE
+        company_specialties = UNLICENSED_MESSAGE
+        company_address = UNLICENSED_MESSAGE
         
         if licensed:
             # Company logo
@@ -386,69 +401,49 @@ def scrape_job_details(job_url, licensed):
                 
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
-        
-        # Application info (simplified for brevity)
-        application_url = UNLICENSED_MESSAGE if not licensed else ''
-        description_application_info = UNLICENSED_MESSAGE if not licensed else ''
-        resolved_application_info = UNLICENSED_MESSAGE if not licensed else ''
-        final_application_email = UNLICENSED_MESSAGE if not licensed else ''
-        final_application_url = UNLICENSED_MESSAGE if not licensed else ''
-        resolved_application_url = UNLICENSED_MESSAGE if not licensed else ''
-        
-        if licensed:
+            
             application_anchor = soup.select_one("#teriary-cta-container > div > a")
             application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
             
             # Extract email from description if available
-            if job_description and job_description != UNLICENSED_MESSAGE:
+            if job_description:
                 email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
                 emails = re.findall(email_pattern, job_description)
                 if emails:
                     description_application_info = emails[0]
-        
-        # Company details (licensed only)
-        company_details = UNLICENSED_MESSAGE if not licensed else ''
-        company_website_url = UNLICENSED_MESSAGE if not licensed else ''
-        company_industry = UNLICENSED_MESSAGE if not licensed else ''
-        company_size = UNLICENSED_MESSAGE if not licensed else ''
-        company_headquarters = UNLICENSED_MESSAGE if not licensed else ''
-        company_type = UNLICENSED_MESSAGE if not licensed else ''
-        company_founded = UNLICENSED_MESSAGE if not licensed else ''
-        company_specialties = UNLICENSED_MESSAGE if not licensed else ''
-        company_address = UNLICENSED_MESSAGE if not licensed else ''
-        
-        if licensed and company_url and company_url != UNLICENSED_MESSAGE and 'linkedin.com' in company_url:
-            try:
-                company_response = session.get(company_url, headers=headers, timeout=15)
-                company_response.raise_for_status()
-                company_soup = BeautifulSoup(company_response.text, 'html.parser')
-                
-                company_details_elem = company_soup.select_one("p.about-us__description") or company_soup.select_one("section.core-section-container > div > p")
-                company_details = company_details_elem.get_text().strip() if company_details_elem else ''
-                
-                company_website_anchor = company_soup.select_one("dl > div:nth-child(1) > dd > a")
-                company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
-                
-                def get_company_detail(label):
-                    elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
-                    for elem in elements:
-                        dt = elem.find("dt")
-                        if dt and dt.get_text().strip().lower() == label.lower():
-                            dd = elem.find("dd")
-                            return dd.get_text().strip() if dd else ''
-                    return ''
-                
-                company_industry = get_company_detail("Industry")
-                company_size = get_company_detail("Company size")
-                company_headquarters = get_company_detail("Headquarters")
-                company_type = get_company_detail("Type")
-                company_founded = get_company_detail("Founded")
-                company_specialties = get_company_detail("Specialties")
-                company_address = company_soup.select_one("#address-0")
-                company_address = company_address.get_text().strip() if company_address else company_headquarters
-                
-            except Exception as e:
-                logger.error(f"Error fetching company page {company_url}: {str(e)}")
+            
+            if company_url and 'linkedin.com' in company_url:
+                try:
+                    company_response = session.get(company_url, headers=headers, timeout=15)
+                    company_response.raise_for_status()
+                    company_soup = BeautifulSoup(company_response.text, 'html.parser')
+                    
+                    company_details_elem = company_soup.select_one("p.about-us__description") or company_soup.select_one("section.core-section-container > div > p")
+                    company_details = company_details_elem.get_text().strip() if company_details_elem else ''
+                    
+                    company_website_anchor = company_soup.select_one("dl > div:nth-child(1) > dd > a")
+                    company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
+                    
+                    def get_company_detail(label):
+                        elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
+                        for elem in elements:
+                            dt = elem.find("dt")
+                            if dt and dt.get_text().strip().lower() == label.lower():
+                                dd = elem.find("dd")
+                                return dd.get_text().strip() if dd else ''
+                        return ''
+                    
+                    company_industry = get_company_detail("Industry")
+                    company_size = get_company_detail("Company size")
+                    company_headquarters = get_company_detail("Headquarters")
+                    company_type = get_company_detail("Type")
+                    company_founded = get_company_detail("Founded")
+                    company_specialties = get_company_detail("Specialties")
+                    company_address = company_soup.select_one("#address-0")
+                    company_address = company_address.get_text().strip() if company_address else company_headquarters
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching company page {company_url}: {str(e)}")
         
         row = [
             job_title, company_logo, company_name, company_url, location, environment,
@@ -591,15 +586,18 @@ def main():
     wp_username = sys.argv[5] if len(sys.argv) > 5 else os.getenv('WP_USERNAME', '')
     wp_app_password = sys.argv[6] if len(sys.argv) > 6 else os.getenv('WP_APP_PASSWORD', '')
     
-    # Validate license
-    licensed = license_key == VALID_LICENSE_KEY
+    # Validate license - only true if VALID_LICENSE_KEY is set and matches provided key
+    licensed = bool(VALID_LICENSE_KEY) and license_key == VALID_LICENSE_KEY
     
-    if not licensed and VALID_LICENSE_KEY:
+    if not licensed and bool(VALID_LICENSE_KEY):
         logger.warning("No valid license key provided. Scraping limited data.")
         print("Warning: No valid license key provided. Only basic job data will be scraped.")
     elif licensed:
         logger.info("Valid license key provided. Scraping full job data.")
         print("Valid license key provided. Scraping full job data.")
+    else:
+        logger.info("No license configuration found. Running in unlicensed mode.")
+        print("Running in unlicensed mode. Only basic job data will be scraped.")
     
     # Validate required parameters
     if not wp_username or not wp_app_password:
