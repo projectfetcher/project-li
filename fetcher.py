@@ -45,6 +45,7 @@ WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-company"
 WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-job"
 WP_FETCHER_STATUS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-status"
 WP_CREDENTIALS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-credentials"
+WP_LICENSE_CHECK_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/check-license"  # New endpoint for license validation
 PROCESSED_IDS_FILE = "processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
 JOB_TYPE_MAPPING = {
@@ -65,12 +66,12 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Stage": "Internship",
     "Bénévolat": "Volunteer"
 }
-logger.debug(f"WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_URL}, WP_MEDIA_URL={WP_MEDIA_URL}, WP_SAVE_COMPANY_URL={WP_SAVE_COMPANY_URL}, WP_SAVE_JOB_URL={WP_SAVE_JOB_URL}")
+logger.debug(f"WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_URL}, WP_MEDIA_URL={WP_MEDIA_URL}, WP_SAVE_COMPANY_URL={WP_SAVE_COMPANY_URL}, WP_SAVE_JOB_URL={WP_SAVE_JOB_URL}, WP_LICENSE_CHECK_URL={WP_LICENSE_CHECK_URL}")
 
-# Valid license key for full data scraping
+# Valid license key for testing (fallback for single-user case)
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
-logger.debug(f"Valid license key: {'*' * len(VALID_LICENSE_KEY)}")
+logger.debug(f"Valid license key (fallback): {'*' * len(VALID_LICENSE_KEY)}")
 logger.debug(f"Unlicensed message: {UNLICENSED_MESSAGE}")
 
 def fetch_credentials():
@@ -102,6 +103,45 @@ def fetch_credentials():
         logger.error(f"Failed to fetch credentials from {WP_CREDENTIALS_URL}: {str(e)}")
         return False
 
+def check_license_key(license_key, auth_headers):
+    """Validate the license key via WordPress API or fallback to hardcoded key."""
+    logger.debug(f"Checking license key: {'***' if license_key else None}")
+    if not license_key:
+        logger.warning("No license key provided")
+        return False
+
+    # Normalize license key for comparison
+    license_key = license_key.strip().replace('-', '').lower()
+    valid_license_key = VALID_LICENSE_KEY.strip().replace('-', '').lower()
+    
+    # First, try to validate via WordPress API
+    try:
+        response = requests.post(
+            WP_LICENSE_CHECK_URL,
+            json={"license_key": license_key},
+            headers=auth_headers,
+            timeout=5,
+            verify=False
+        )
+        logger.debug(f"License check request status: {response.status_code}, Response: {response.text[:200]}...")
+        response.raise_for_status()
+        data = response.json()
+        if data.get('success') and data.get('valid'):
+            logger.info("License key validated successfully via WordPress API")
+            return True
+        else:
+            logger.warning(f"License key validation failed via API: {data.get('message', 'Unknown error')}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to validate license key via {WP_LICENSE_CHECK_URL}: {str(e)}")
+
+    # Fallback to hardcoded license key comparison
+    if license_key == valid_license_key:
+        logger.info("License key validated successfully via hardcoded comparison")
+        return True
+    
+    logger.warning("License key is invalid")
+    return False
+
 def check_fetcher_status(auth_headers):
     """Check the fetcher status from WordPress."""
     logger.debug(f"Checking fetcher status at {WP_FETCHER_STATUS_URL}")
@@ -117,7 +157,7 @@ def check_fetcher_status(auth_headers):
         return 'stopped'
 
 def sanitize_text(text, is_url=False):
-    logger.debug(f"Sanitizing text: {text[:50]}... (is_url={is_url})")
+    logger.debug(f"Sanitizing text: {text[:50] if text else ''}... (is_url={is_url})")
     if not text:
         logger.debug("Text is empty, returning empty string")
         return ''
@@ -136,7 +176,7 @@ def sanitize_text(text, is_url=False):
 
 def normalize_for_deduplication(text):
     """Normalize text for deduplication by removing spaces, punctuation, and converting to lowercase."""
-    logger.debug(f"Normalizing text for deduplication: {text[:50]}...")
+    logger.debug(f"Normalizing text for deduplication: {text[:50] if text else ''}...")
     text = re.sub(r'[^\w\s]', '', text)
     text = re.sub(r'\s+', '', text)
     normalized = text.lower()
@@ -145,14 +185,14 @@ def normalize_for_deduplication(text):
 
 def generate_id(text):
     """Generate a unique ID based on text."""
-    logger.debug(f"Generating ID for text={text[:30]}...")
+    logger.debug(f"Generating ID for text={text[:30] if text else ''}...")
     text_id = hashlib.md5(text.encode()).hexdigest()[:16]
     logger.debug(f"Generated ID: {text_id}")
     return text_id
 
 def split_paragraphs(text, max_length=200):
     """Split large paragraphs into smaller ones, each up to max_length characters."""
-    logger.debug(f"Splitting paragraphs for text (length={len(text)}): {text[:50]}...")
+    logger.debug(f"Splitting paragraphs for text (length={len(text) if text else 0}): {text[:50] if text else ''}...")
     paragraphs = text.split('\n\n')
     result = []
     for para in paragraphs:
@@ -893,10 +933,13 @@ def main():
         "Authorization": f"Basic {base64.b64encode(auth_string.encode()).decode()}"
     }
     logger.debug(f"Created auth headers: Authorization=Basic {'***'}")
+    
+    # Validate license key
+    licensed = check_license_key(LICENSE_KEY, auth_headers)
+    logger.debug(f"License status: {'Valid' if licensed else 'Invalid or not provided'}")
+    
     processed_ids = load_processed_ids()
     logger.debug(f"Loaded {len(processed_ids)} processed job IDs")
-    licensed = LICENSE_KEY == VALID_LICENSE_KEY
-    logger.debug(f"License status: {'Valid' if licensed else 'Invalid or not provided'}")
     crawl(auth_headers, processed_ids, licensed, COUNTRY, KEYWORD)
     logger.debug("Main function completed")
 
