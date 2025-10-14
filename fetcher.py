@@ -92,6 +92,45 @@ logger.debug(f"WordPress URLs configured: SAVE_JOB={WP_SAVE_JOB_URL}, SAVE_COMPA
 logger.debug(f"Job type mappings: {JOB_TYPE_MAPPING}")
 logger.debug(f"French to English job type mappings: {FRENCH_TO_ENGLISH_JOB_TYPE}")
 
+def validate_license_key(token):
+    """Validate license key - check exact match or if it contains the valid key pattern"""
+    if not token:
+        logger.warning("No FETCHER_TOKEN provided")
+        return False
+    
+    # Check exact match first
+    if token == VALID_LICENSE_KEY:
+        logger.info(f"Exact license key match found: {VALID_LICENSE_KEY[:8]}...")
+        return True
+    
+    # Check if token contains the valid license key (in case it's passed as part of GitHub token)
+    if VALID_LICENSE_KEY in token:
+        logger.info(f"License key found within token: {VALID_LICENSE_KEY[:8]}...")
+        return True
+    
+    # Additional check for common license key formats
+    license_pattern = r'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5'
+    if re.search(license_pattern, token):
+        logger.info(f"License key pattern matched in token")
+        return True
+    
+    logger.warning(f"Invalid FETCHER_TOKEN format: {token[:20]}...")
+    return False
+
+def get_license_status():
+    """Check license validity using FETCHER_TOKEN"""
+    licensed = validate_license_key(FETCHER_TOKEN)
+    
+    if licensed:
+        logger.info("✅ License validated successfully - Full data access enabled")
+        print("✅ License: VALID (Full data access)")
+    else:
+        logger.warning("⚠️ No valid license found - Basic data only")
+        print("⚠️ License: INVALID (Basic data only)")
+        print(f"   Get full license: https://mimusjobs.com/job-fetcher")
+    
+    return licensed
+
 def validate_environment():
     """Validate required environment variables"""
     missing = []
@@ -104,24 +143,15 @@ def validate_environment():
     if not COUNTRY:
         missing.append("COUNTRY")
     
-    # KEYWORD is optional, so don't add it to missing list
-    
+    # KEYWORD is optional
     if missing:
         logger.error(f"Missing required environment variables: {', '.join(missing)}")
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
     
     logger.info("All required environment variables validated successfully")
     logger.info(f"Search configuration: Country='{COUNTRY}', Keyword='{KEYWORD or 'ALL JOBS'}'")
+    logger.info(f"License token received: {'Yes' if FETCHER_TOKEN else 'No'}")
     return True
-
-def get_license_status():
-    """Check license validity using FETCHER_TOKEN"""
-    licensed = FETCHER_TOKEN == VALID_LICENSE_KEY
-    if not licensed and FETCHER_TOKEN:
-        logger.warning(f"Invalid FETCHER_TOKEN provided")
-    
-    logger.info(f"License status: {'Licensed (Full data)' if licensed else 'Unlicensed (Basic data only)'}")
-    return licensed
 
 def build_search_url(page=0):
     """Build LinkedIn search URL with optional keyword"""
@@ -555,7 +585,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 if job_post_id:
                     processed_ids.add(job_id)
                     success_count += 1
-                    print(f"✓ Saved: {job_title} at {company_name}")
+                    print(f"{'🔓' if licensed else '🔒'} Saved: {job_title} at {company_name}")
                 else:
                     failure_count += 1
                     print(f"✗ Failed: {job_title} at {company_name} - {job_msg}")
@@ -574,17 +604,20 @@ def crawl(wp_headers, processed_ids, licensed):
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully saved: {success_count}")
     print(f"Failed: {failure_count}")
+    print(f"License status: {'FULL ACCESS' if licensed else 'BASIC ACCESS ONLY'}")
 
 def main():
     """Main execution function"""
     try:
         logger.info("Starting LinkedIn Job Fetcher")
         print("🚀 Starting LinkedIn Job Fetcher...")
+        print(f"📍 Country: {COUNTRY}")
+        print(f"🔍 Keyword: {KEYWORD or 'ALL JOBS'}")
         
         # Validate environment (KEYWORD is optional)
         validate_environment()
         
-        # Check license
+        # Check license with improved validation
         licensed = get_license_status()
         
         # Create WP headers
@@ -592,7 +625,7 @@ def main():
         
         # Load processed IDs
         processed_ids = load_processed_ids()
-        print(f"Found {len(processed_ids)} previously processed jobs")
+        print(f"📋 Found {len(processed_ids)} previously processed jobs")
         
         # Start crawling
         crawl(wp_headers, processed_ids, licensed)
