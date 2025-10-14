@@ -11,18 +11,28 @@ import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
+import sys
+import traceback
+
+# Create uploads directory if it doesn't exist
+os.makedirs("uploads", exist_ok=True)
 
 # Configure logging for verbose output
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[
-    logging.StreamHandler(),  # Output to console
-    logging.FileHandler('fetcher.log')  # Save to file for debugging
-])
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(os.path.join("uploads", 'fetcher.log'))
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # HTTP headers for scraping
 headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
 }
+logger.debug(f"Initialized HTTP headers: {headers}")
 
 # Get environment variables
 logger.debug("Loading environment variables")
@@ -32,8 +42,7 @@ WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')
 FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')
-LICENSE_KEY = os.getenv('LICENSE_KEY', '')
-logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}, LICENSE_KEY={'***' if LICENSE_KEY else None}")
+logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}")
 
 # Constants for WordPress
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
@@ -45,9 +54,8 @@ WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-company"
 WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-job"
 WP_FETCHER_STATUS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-status"
 WP_CREDENTIALS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-credentials"
-WP_LICENSE_CHECK_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/check-license"  # New endpoint for license validation
-PROCESSED_IDS_FILE = "processed_job_ids.csv"
-LAST_PAGE_FILE = "last_processed_page.txt"
+PROCESSED_IDS_FILE = os.path.join("uploads", "processed_job_ids.json")
+LAST_PAGE_FILE = os.path.join("Uploads", "last_processed_page.txt")
 JOB_TYPE_MAPPING = {
     "Full-time": "full-time",
     "Part-time": "part-time",
@@ -66,12 +74,15 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Stage": "Internship",
     "Bénévolat": "Volunteer"
 }
-logger.debug(f"WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_URL}, WP_MEDIA_URL={WP_MEDIA_URL}, WP_SAVE_COMPANY_URL={WP_SAVE_COMPANY_URL}, WP_SAVE_JOB_URL={WP_SAVE_JOB_URL}, WP_LICENSE_CHECK_URL={WP_LICENSE_CHECK_URL}")
+logger.debug(f"WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_URL}, WP_MEDIA_URL={WP_MEDIA_URL}, WP_SAVE_COMPANY_URL={WP_SAVE_COMPANY_URL}, WP_SAVE_JOB_URL={WP_SAVE_JOB_URL}")
+logger.debug(f"File paths: PROCESSED_IDS_FILE={PROCESSED_IDS_FILE}, LAST_PAGE_FILE={LAST_PAGE_FILE}")
+logger.debug(f"Job type mappings: {JOB_TYPE_MAPPING}")
+logger.debug(f"French to English job type mappings: {FRENCH_TO_ENGLISH_JOB_TYPE}")
 
-# Valid license key for testing (fallback for single-user case)
+# Valid license key for testing
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
-logger.debug(f"Valid license key (fallback): {'*' * len(VALID_LICENSE_KEY)}")
+logger.debug(f"Valid license key: {'*' * len(VALID_LICENSE_KEY)}")
 logger.debug(f"Unlicensed message: {UNLICENSED_MESSAGE}")
 
 def fetch_credentials():
@@ -103,45 +114,6 @@ def fetch_credentials():
         logger.error(f"Failed to fetch credentials from {WP_CREDENTIALS_URL}: {str(e)}")
         return False
 
-def check_license_key(license_key, auth_headers):
-    """Validate the license key via WordPress API or fallback to hardcoded key."""
-    logger.debug(f"Checking license key: {'***' if license_key else None}")
-    if not license_key:
-        logger.warning("No license key provided")
-        return False
-
-    # Normalize license key for comparison
-    license_key = license_key.strip().replace('-', '').lower()
-    valid_license_key = VALID_LICENSE_KEY.strip().replace('-', '').lower()
-    
-    # First, try to validate via WordPress API
-    try:
-        response = requests.post(
-            WP_LICENSE_CHECK_URL,
-            json={"license_key": license_key},
-            headers=auth_headers,
-            timeout=5,
-            verify=False
-        )
-        logger.debug(f"License check request status: {response.status_code}, Response: {response.text[:200]}...")
-        response.raise_for_status()
-        data = response.json()
-        if data.get('success') and data.get('valid'):
-            logger.info("License key validated successfully via WordPress API")
-            return True
-        else:
-            logger.warning(f"License key validation failed via API: {data.get('message', 'Unknown error')}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to validate license key via {WP_LICENSE_CHECK_URL}: {str(e)}")
-
-    # Fallback to hardcoded license key comparison
-    if license_key == valid_license_key:
-        logger.info("License key validated successfully via hardcoded comparison")
-        return True
-    
-    logger.warning("License key is invalid")
-    return False
-
 def check_fetcher_status(auth_headers):
     """Check the fetcher status from WordPress."""
     logger.debug(f"Checking fetcher status at {WP_FETCHER_STATUS_URL}")
@@ -157,112 +129,117 @@ def check_fetcher_status(auth_headers):
         return 'stopped'
 
 def sanitize_text(text, is_url=False):
-    logger.debug(f"Sanitizing text: {text[:50] if text else ''}... (is_url={is_url})")
+    logger.debug(f"sanitize_text called with text='{text[:50]}{'...' if len(text) > 50 else ''}', is_url={is_url}")
     if not text:
-        logger.debug("Text is empty, returning empty string")
+        logger.debug("sanitize_text: Empty text, returning empty string")
         return ''
     if is_url:
         text = text.strip()
+        logger.debug(f"sanitize_text: Stripped text='{text}'")
         if not text.startswith(('http://', 'https://')):
             text = 'https://' + text
-        logger.debug(f"Sanitized URL: {text}")
+            logger.debug(f"sanitize_text: Added https:// prefix, text='{text}'")
+        logger.debug(f"sanitize_text: Returning URL='{text}'")
         return text
     text = re.sub(r'<[^>]+>', '', text)
+    logger.debug(f"sanitize_text: Removed HTML tags, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'(\w)\.(\w)', r'\1. \2', text)
+    logger.debug(f"sanitize_text: Added space after periods, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'(\w)(\w)', r'\1 \2', text) if re.match(r'^\w+$', text) else text
-    sanitized = ' '.join(text.split())
-    logger.debug(f"Sanitized text: {sanitized[:50]}...")
-    return sanitized
+    logger.debug(f"sanitize_text: Separated fused words, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
+    text = ' '.join(text.split())
+    logger.debug(f"sanitize_text: Normalized whitespace, returning text='{text[:50]}{'...' if len(text) > 50 else ''}'")
+    return text
 
 def normalize_for_deduplication(text):
-    """Normalize text for deduplication by removing spaces, punctuation, and converting to lowercase."""
-    logger.debug(f"Normalizing text for deduplication: {text[:50] if text else ''}...")
+    logger.debug(f"normalize_for_deduplication called with text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'[^\w\s]', '', text)
+    logger.debug(f"normalize_for_deduplication: Removed punctuation, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
     text = re.sub(r'\s+', '', text)
-    normalized = text.lower()
-    logger.debug(f"Normalized text: {normalized[:50]}...")
-    return normalized
+    logger.debug(f"normalize_for_deduplication: Removed whitespace, text='{text[:50]}{'...' if len(text) > 50 else ''}'")
+    result = text.lower()
+    logger.debug(f"normalize_for_deduplication: Converted to lowercase, returning='{result[:50]}{'...' if len(result) > 50 else ''}'")
+    return result
 
 def generate_id(text):
-    """Generate a unique ID based on text."""
-    logger.debug(f"Generating ID for text={text[:30] if text else ''}...")
-    text_id = hashlib.md5(text.encode()).hexdigest()[:16]
-    logger.debug(f"Generated ID: {text_id}")
-    return text_id
+    logger.debug(f"generate_id called with text='{text[:30]}{'...' if len(text) > 30 else ''}'")
+    id_hash = hashlib.md5(text.encode()).hexdigest()[:16]
+    logger.debug(f"generate_id: Generated id='{id_hash}'")
+    return id_hash
 
 def split_paragraphs(text, max_length=200):
-    """Split large paragraphs into smaller ones, each up to max_length characters."""
-    logger.debug(f"Splitting paragraphs for text (length={len(text) if text else 0}): {text[:50] if text else ''}...")
+    logger.debug(f"split_paragraphs called with text='{text[:50]}{'...' if len(text) > 50 else ''}', max_length={max_length}")
     paragraphs = text.split('\n\n')
+    logger.debug(f"split_paragraphs: Split into {len(paragraphs)} paragraphs")
     result = []
     for para in paragraphs:
         para = para.strip()
         if not para:
-            logger.debug("Skipping empty paragraph")
+            logger.debug("split_paragraphs: Skipping empty paragraph")
             continue
+        logger.debug(f"split_paragraphs: Processing paragraph='{para[:50]}{'...' if len(para) > 50 else ''}'")
         while len(para) > max_length:
             split_point = para.rfind(' ', 0, max_length)
             if split_point == -1:
                 split_point = para.rfind('.', 0, max_length)
             if split_point == -1:
                 split_point = max_length
+            logger.debug(f"split_paragraphs: Splitting at position {split_point}, chunk='{para[:split_point][:50]}{'...' if len(para[:split_point]) > 50 else ''}'")
             result.append(para[:split_point].strip())
-            logger.debug(f"Split paragraph: {para[:split_point].strip()[:50]}...")
             para = para[split_point:].strip()
         if para:
+            logger.debug(f"split_paragraphs: Adding final chunk='{para[:50]}{'...' if len(para) > 50 else ''}'")
             result.append(para)
-            logger.debug(f"Added paragraph: {para[:50]}...")
     final_text = '\n\n'.join(result)
-    logger.debug(f"Final split text (length={len(final_text)}): {final_text[:50]}...")
+    logger.debug(f"split_paragraphs: Returning text with {len(result)} paragraphs, length={len(final_text)}")
     return final_text
 
 def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
-    logger.debug(f"Getting or creating term: {term_name} for taxonomy {taxonomy}")
+    logger.debug(f"get_or_create_term called with term_name='{term_name}', taxonomy='{taxonomy}', wp_url='{wp_url}'")
     term_name = sanitize_text(term_name)
     if not term_name:
-        logger.debug("Term name is empty, returning None")
+        logger.debug("get_or_create_term: Term name is empty, returning None")
         return None
     check_url = f"{wp_url}?search={term_name}"
-    logger.debug(f"Checking term at URL: {check_url}")
+    logger.debug(f"get_or_create_term: Checking term at URL: {check_url}")
     try:
         response = requests.get(check_url, headers=auth_headers, timeout=5, verify=False)
-        logger.debug(f"Term check request status: {response.status_code}, Response: {response.text[:200]}...")
+        logger.debug(f"get_or_create_term: Term check request status={response.status_code}, Response={response.text[:200]}...")
         response.raise_for_status()
         terms = response.json()
         for term in terms:
             if term['name'].lower() == term_name.lower():
-                logger.info(f"Found existing {taxonomy} term: {term_name}, ID: {term['id']}")
+                logger.info(f"get_or_create_term: Found existing {taxonomy} term: {term_name}, ID: {term['id']}")
                 return term['id']
         post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
-        logger.debug(f"Creating new term with payload: {post_data}")
+        logger.debug(f"get_or_create_term: Creating new term with payload={post_data}")
         response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=5, verify=False)
-        logger.debug(f"Term creation request status: {response.status_code}, Response: {response.text[:200]}...")
+        logger.debug(f"get_or_create_term: Term creation request status={response.status_code}, Response={response.text[:200]}...")
         response.raise_for_status()
         term = response.json()
-        logger.info(f"Created new {taxonomy} term: {term_name}, ID: {term['id']}")
+        logger.info(f"get_or_create_term: Created new {taxonomy} term: {term_name}, ID: {term['id']}")
         return term['id']
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to get or create {taxonomy} term {term_name}: {str(e)}")
+        logger.error(f"get_or_create_term: Failed to get or create {taxonomy} term {term_name}: {str(e)}", exc_info=True)
         return None
 
 def check_existing_job(job_title, company_name, auth_headers):
-    """Check if a job with the same title and company already exists on WordPress."""
-    logger.debug(f"Checking for existing job: {job_title[:30]}... at {company_name}")
+    logger.debug(f"check_existing_job called with job_title='{job_title[:30]}...', company_name='{company_name}'")
     job_id = generate_id(f"{job_title}_{company_name}")
     check_url = f"{WP_SAVE_JOB_URL}?job_id={job_id}"
-    logger.debug(f"Checking job at URL: {check_url}")
+    logger.debug(f"check_existing_job: Checking job at URL: {check_url}")
     try:
         response = requests.get(check_url, headers=auth_headers, timeout=5, verify=False)
-        logger.debug(f"Existing job check status: {response.status_code}, Response: {response.text[:200]}...")
+        logger.debug(f"check_existing_job: Existing job check status={response.status_code}, Response={response.text[:200]}...")
         response.raise_for_status()
         posts = response.json()
         if posts:
-            logger.info(f"Found existing job: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
+            logger.info(f"check_existing_job: Found existing job: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
             return posts[0].get('id'), posts[0].get('link')
-        logger.debug("No existing job found")
+        logger.debug("check_existing_job: No existing job found")
         return None, None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
+        logger.error(f"check_existing_job: Failed to check existing job {job_title} at {company_name}: {str(e)}", exc_info=True)
         return None, None
 
 def save_company_to_wordpress(index, company_data, wp_headers, licensed):
@@ -371,54 +348,51 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers, license
         return None, None
 
 def load_processed_ids():
-    """Load processed job IDs from file."""
-    logger.debug(f"Loading processed job IDs from {PROCESSED_IDS_FILE}")
+    logger.debug(f"load_processed_ids called for file={PROCESSED_IDS_FILE}")
     processed_ids = set()
     try:
         if os.path.exists(PROCESSED_IDS_FILE):
             with open(PROCESSED_IDS_FILE, "r") as f:
-                processed_ids = set(line.strip() for line in f if line.strip())
-            logger.info(f"Loaded {len(processed_ids)} processed job IDs from {PROCESSED_IDS_FILE}")
+                processed_ids = set(json.load(f))
+            logger.info(f"load_processed_ids: Loaded {len(processed_ids)} processed job IDs from {PROCESSED_IDS_FILE}")
         else:
-            logger.debug(f"No processed IDs file found at {PROCESSED_IDS_FILE}")
+            logger.debug(f"load_processed_ids: File {PROCESSED_IDS_FILE} does not exist")
     except Exception as e:
-        logger.error(f"Failed to load processed IDs from {PROCESSED_IDS_FILE}: {str(e)}")
+        logger.error(f"load_processed_ids: Failed to load processed IDs from {PROCESSED_IDS_FILE}: {str(e)}", exc_info=True)
+    logger.debug(f"load_processed_ids: Returning {len(processed_ids)} IDs")
     return processed_ids
 
 def save_processed_ids(processed_ids):
-    """Save processed job IDs to file."""
-    logger.debug(f"Saving {len(processed_ids)} processed job IDs to {PROCESSED_IDS_FILE}")
+    logger.debug(f"save_processed_ids called with {len(processed_ids)} IDs")
     try:
         with open(PROCESSED_IDS_FILE, "w") as f:
-            for job_id in processed_ids:
-                f.write(f"{job_id}\n")
-        logger.info(f"Saved {len(processed_ids)} processed job IDs to {PROCESSED_IDS_FILE}")
+            json.dump(list(processed_ids), f)
+        logger.info(f"save_processed_ids: Saved {len(processed_ids)} job IDs to {PROCESSED_IDS_FILE}")
     except Exception as e:
-        logger.error(f"Failed to save processed IDs to {PROCESSED_IDS_FILE}: {str(e)}")
+        logger.error(f"save_processed_ids: Failed to save processed IDs to {PROCESSED_IDS_FILE}: {str(e)}", exc_info=True)
 
 def load_last_page():
-    """Load the last processed page number."""
-    logger.debug(f"Loading last processed page from {LAST_PAGE_FILE}")
+    logger.debug(f"load_last_page called for file={LAST_PAGE_FILE}")
     try:
         if os.path.exists(LAST_PAGE_FILE):
             with open(LAST_PAGE_FILE, "r") as f:
                 page = int(f.read().strip())
-                logger.info(f"Loaded last processed page: {page}")
+                logger.info(f"load_last_page: Loaded last processed page: {page}")
                 return page
-        logger.debug(f"No last page file found at {LAST_PAGE_FILE}")
+        logger.debug(f"load_last_page: File {LAST_PAGE_FILE} does not exist")
     except Exception as e:
-        logger.error(f"Failed to load last page from {LAST_PAGE_FILE}: {str(e)}")
+        logger.error(f"load_last_page: Failed to load last page from {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
+    logger.debug("load_last_page: Returning default page 0")
     return 0
 
 def save_last_page(page):
-    """Save the last processed page number."""
-    logger.debug(f"Saving last processed page {page} to {LAST_PAGE_FILE}")
+    logger.debug(f"save_last_page called with page={page}")
     try:
         with open(LAST_PAGE_FILE, "w") as f:
             f.write(str(page))
-        logger.info(f"Saved last processed page: {page} to {LAST_PAGE_FILE}")
+        logger.info(f"save_last_page: Saved last processed page: {page} to {LAST_PAGE_FILE}")
     except Exception as e:
-        logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
+        logger.error(f"save_last_page: Failed to save last page to {LAST_PAGE_FILE}: {str(e)}", exc_info=True)
 
 def crawl(auth_headers, processed_ids, licensed, country, keyword):
     logger.debug(f"crawl called with processed_ids_count={len(processed_ids)}, licensed={licensed}, country={country}, keyword={keyword}")
@@ -923,25 +897,56 @@ def scrape_job_details(job_url, licensed):
         return None
 
 def main():
-    logger.debug("Starting main function")
+    logger.debug("main: Starting execution")
+    # Check license key, country, keyword, site_url, wp_username, wp_app_password from command-line arguments
+    license_key = sys.argv[1] if len(sys.argv) > 1 else ""
+    country = sys.argv[2] if len(sys.argv) > 2 else os.getenv('COUNTRY', "Mauritius")
+    keyword = sys.argv[3] if len(sys.argv) > 3 else os.getenv('KEYWORD', "")
+    site_url = sys.argv[4] if len(sys.argv) > 4 else os.getenv('WP_SITE_URL', "https://mauritius.mimusjobs.com")
+    wp_username = sys.argv[5] if len(sys.argv) > 5 else os.getenv('WP_USERNAME', "mary")
+    wp_app_password = sys.argv[6] if len(sys.argv) > 6 else os.getenv('WP_APP_PASSWORD', "Piab Mwog pfiq pdfK BOGH hDEy")
+    logger.debug(f"main: Parameters - License: {'*' * len(license_key) if license_key else 'None'}, Country: {country}, Keyword: {keyword}, Site URL: {site_url}, WP Username: {wp_username}, WP App Password: {'*' * len(wp_app_password)}")
+    
+    # Normalize license key for comparison
+    license_key_normalized = license_key.strip().replace('-', '').lower()
+    valid_license_key_normalized = VALID_LICENSE_KEY.strip().replace('-', '').lower()
+    licensed = license_key_normalized == valid_license_key_normalized
+    if not licensed:
+        logger.warning("main: No valid license key provided. Scraping limited data.")
+        print("Warning: No valid license key provided. Only basic job data (title, company name, location, job type, job URL) will be scraped.")
+    else:
+        logger.info("main: Valid license key provided. Scraping full job data.")
+        print("Valid license key provided. Scraping full job data.")
+
+    # Update WordPress URLs with site_url
+    global WP_URL, WP_COMPANY_URL, WP_MEDIA_URL, WP_JOB_TYPE_URL, WP_JOB_REGION_URL, WP_SAVE_COMPANY_URL, WP_SAVE_JOB_URL, WP_FETCHER_STATUS_URL, WP_CREDENTIALS_URL
+    WP_URL = f"{site_url}/wp-json/wp/v2/job-listings"
+    WP_COMPANY_URL = f"{site_url}/wp-json/fetcher/v1/save-company"
+    WP_MEDIA_URL = f"{site_url}/wp-json/wp/v2/media"
+    WP_JOB_TYPE_URL = f"{site_url}/wp-json/wp/v2/job_listing_type"
+    WP_JOB_REGION_URL = f"{site_url}/wp-json/wp/v2/job_listing_region"
+    WP_SAVE_COMPANY_URL = f"{site_url}/wp-json/fetcher/v1/save-company"
+    WP_SAVE_JOB_URL = f"{site_url}/wp-json/fetcher/v1/save-job"
+    WP_FETCHER_STATUS_URL = f"{site_url}/wp-json/fetcher/v1/get-status"
+    WP_CREDENTIALS_URL = f"{site_url}/wp-json/fetcher/v1/get-credentials"
+    logger.debug(f"main: Updated WordPress endpoints: WP_URL={WP_URL}, WP_COMPANY_URL={WP_COMPANY_URL}, WP_SAVE_JOB_URL={WP_SAVE_JOB_URL}")
+
     if not fetch_credentials():
-        logger.error("Cannot proceed without valid WordPress credentials")
+        logger.error("main: Cannot proceed without valid WordPress credentials")
         print("Error: Cannot proceed without valid WordPress credentials")
         return
-    auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
+    auth_string = f"{wp_username}:{wp_app_password}"
+    logger.debug(f"main: Constructing auth string with WP_USERNAME={wp_username}, WP_APP_PASSWORD={'*' * len(wp_app_password)}")
     auth_headers = {
-        "Authorization": f"Basic {base64.b64encode(auth_string.encode()).decode()}"
+        "Authorization": f"Basic {base64.b64encode(auth_string.encode()).decode()}",
+        "Content-Type": "application/json"
     }
-    logger.debug(f"Created auth headers: Authorization=Basic {'***'}")
-    
-    # Validate license key
-    licensed = check_license_key(LICENSE_KEY, auth_headers)
-    logger.debug(f"License status: {'Valid' if licensed else 'Invalid or not provided'}")
+    logger.debug(f"main: Prepared WordPress headers: {auth_headers}")
     
     processed_ids = load_processed_ids()
-    logger.debug(f"Loaded {len(processed_ids)} processed job IDs")
-    crawl(auth_headers, processed_ids, licensed, COUNTRY, KEYWORD)
-    logger.debug("Main function completed")
+    logger.debug(f"main: Loaded {len(processed_ids)} processed job IDs")
+    crawl(auth_headers, processed_ids, licensed, country, keyword)
+    logger.debug("main: Completed execution")
 
 if __name__ == "__main__":
     logger.debug("Script execution started")
