@@ -29,20 +29,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get environment variables
+# Get environment variables - FIXED: Use LICENSE_KEY instead of FETCHER_TOKEN
 logger.debug("Loading environment variables")
 WP_SITE_URL = os.getenv('WP_SITE_URL')
 WP_USERNAME = os.getenv('WP_USERNAME')
 WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')  # Optional keyword
-FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')
+LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # FIXED: License key for full data access
 
 # URL encode country and keyword for LinkedIn search
 COUNTRY_ENCODED = urllib.parse.quote(COUNTRY or 'Worldwide')
 KEYWORD_ENCODED = urllib.parse.quote(KEYWORD) if KEYWORD else ''
 
-logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, FETCHER_TOKEN={'***' if FETCHER_TOKEN else None}")
+logger.debug(f"Environment variables: WP_SITE_URL={WP_SITE_URL}, WP_USERNAME={WP_USERNAME}, WP_APP_PASSWORD={'***' if WP_APP_PASSWORD else None}, COUNTRY={COUNTRY}, KEYWORD={KEYWORD}, LICENSE_KEY={'***' if LICENSE_KEY else None}")
 logger.debug(f"Encoded search params: COUNTRY_ENCODED={COUNTRY_ENCODED}, KEYWORD_ENCODED={KEYWORD_ENCODED}")
 
 # Constants for WordPress
@@ -64,7 +64,7 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# Valid license key for full data scraping
+# FIXED: Valid license key for full data scraping
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
 
@@ -92,42 +92,33 @@ logger.debug(f"WordPress URLs configured: SAVE_JOB={WP_SAVE_JOB_URL}, SAVE_COMPA
 logger.debug(f"Job type mappings: {JOB_TYPE_MAPPING}")
 logger.debug(f"French to English job type mappings: {FRENCH_TO_ENGLISH_JOB_TYPE}")
 
-def validate_license_key(token):
-    """Validate license key - check exact match or if it contains the valid key pattern"""
-    if not token:
-        logger.warning("No FETCHER_TOKEN provided")
+def validate_license_key(license_key):
+    """Validate license key - exact match required"""
+    if not license_key:
+        logger.warning("No LICENSE_KEY provided")
         return False
     
-    # Check exact match first
-    if token == VALID_LICENSE_KEY:
-        logger.info(f"Exact license key match found: {VALID_LICENSE_KEY[:8]}...")
+    # Exact match validation
+    if license_key.strip() == VALID_LICENSE_KEY:
+        logger.info(f"✅ License key validated successfully: {VALID_LICENSE_KEY[:8]}...")
         return True
     
-    # Check if token contains the valid license key (in case it's passed as part of GitHub token)
-    if VALID_LICENSE_KEY in token:
-        logger.info(f"License key found within token: {VALID_LICENSE_KEY[:8]}...")
-        return True
-    
-    # Additional check for common license key formats
-    license_pattern = r'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5'
-    if re.search(license_pattern, token):
-        logger.info(f"License key pattern matched in token")
-        return True
-    
-    logger.warning(f"Invalid FETCHER_TOKEN format: {token[:20]}...")
+    logger.warning(f"❌ Invalid LICENSE_KEY. Expected: {VALID_LICENSE_KEY[:8]}... Got: {license_key[:8]}...")
     return False
 
 def get_license_status():
-    """Check license validity using FETCHER_TOKEN"""
-    licensed = validate_license_key(FETCHER_TOKEN)
+    """Check license validity using LICENSE_KEY environment variable"""
+    licensed = validate_license_key(LICENSE_KEY)
     
     if licensed:
         logger.info("✅ License validated successfully - Full data access enabled")
         print("✅ License: VALID (Full data access)")
+        print(f"   Key: {VALID_LICENSE_KEY[:16]}...")
     else:
         logger.warning("⚠️ No valid license found - Basic data only")
         print("⚠️ License: INVALID (Basic data only)")
         print(f"   Get full license: https://mimusjobs.com/job-fetcher")
+        print(f"   Enter in WP Settings: A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5")
     
     return licensed
 
@@ -143,14 +134,14 @@ def validate_environment():
     if not COUNTRY:
         missing.append("COUNTRY")
     
-    # KEYWORD is optional
+    # LICENSE_KEY is optional
     if missing:
         logger.error(f"Missing required environment variables: {', '.join(missing)}")
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
     
     logger.info("All required environment variables validated successfully")
     logger.info(f"Search configuration: Country='{COUNTRY}', Keyword='{KEYWORD or 'ALL JOBS'}'")
-    logger.info(f"License token received: {'Yes' if FETCHER_TOKEN else 'No'}")
+    logger.info(f"License key received: {'Yes' if LICENSE_KEY else 'No'}")
     return True
 
 def build_search_url(page=0):
@@ -585,10 +576,13 @@ def crawl(wp_headers, processed_ids, licensed):
                 if job_post_id:
                     processed_ids.add(job_id)
                     success_count += 1
-                    print(f"{'🔓' if licensed else '🔒'} Saved: {job_title} at {company_name}")
+                    emoji = "🔓" if licensed else "🔒"
+                    print(f"{emoji} Saved: {job_title} at {company_name}")
                 else:
                     failure_count += 1
                     print(f"✗ Failed: {job_title} at {company_name} - {job_msg}")
+                
+                time.sleep(random.uniform(2, 5))  # Rate limiting
             
             save_last_page(i + 1)
             
@@ -614,10 +608,10 @@ def main():
         print(f"📍 Country: {COUNTRY}")
         print(f"🔍 Keyword: {KEYWORD or 'ALL JOBS'}")
         
-        # Validate environment (KEYWORD is optional)
+        # Validate environment (LICENSE_KEY is optional)
         validate_environment()
         
-        # Check license with improved validation
+        # FIXED: Check license with proper LICENSE_KEY validation
         licensed = get_license_status()
         
         # Create WP headers
