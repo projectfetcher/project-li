@@ -68,11 +68,15 @@ jobs:
         echo "License key: ${LICENSE_KEY:0:8}..." # Show first 8 chars
         python fetcher.py
         
-    - name: Upload logs
+    - name: Upload logs and results
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # FIXED: Updated from v3 to v4
       with:
-        name: fetcher-logs
+        name: fetcher-logs-and-results
         path: |
           uploads/fetcher.log
           uploads/*.json
+          uploads/processed_job_ids.json
+          uploads/last_processed_page.txt
+        retention-days: 7
+        compression-level: 6
