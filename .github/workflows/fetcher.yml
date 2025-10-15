@@ -29,6 +29,11 @@ on:
         required: false
         default: ''
         type: string
+      linkedin_cookies:  # NEW: LinkedIn cookies input
+        description: 'LinkedIn Cookies JSON for authenticated scraping'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   fetch-jobs:
@@ -60,17 +65,19 @@ jobs:
         COUNTRY: ${{ github.event.inputs.country }}
         KEYWORD: ${{ github.event.inputs.keyword }}
         LICENSE_KEY: ${{ github.event.inputs.license_key }}
+        LINKEDIN_COOKIES: ${{ github.event.inputs.linkedin_cookies }}  # NEW: LinkedIn cookies env var
       run: |
-        echo "Starting job fetcher..."
+        echo "Starting job fetcher with authentication..."
         echo "Country: ${{ github.event.inputs.country }}"
         echo "Keyword: '${{ github.event.inputs.keyword }}'"
         echo "Site URL: ${{ github.event.inputs.wp_site_url }}"
-        echo "License key: ${LICENSE_KEY:0:8}..." # Show first 8 chars
+        echo "License key: ${LICENSE_KEY:0:8}..."
+        echo "LinkedIn cookies: ${LINKEDIN_COOKIES:0:50}..." # Show first 50 chars
         python fetcher.py
         
     - name: Upload logs and results
       if: always()
-      uses: actions/upload-artifact@v4  # FIXED: Updated from v3 to v4
+      uses: actions/upload-artifact@v4
       with:
         name: fetcher-logs-and-results
         path: |
