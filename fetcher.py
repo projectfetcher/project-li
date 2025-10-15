@@ -815,32 +815,65 @@ def scrape_job_details(job_url, licensed, session):
         logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
         return None
 
+# Add this after other environment variables
+LINKEDIN_COOKIES = os.getenv('LINKEDIN_COOKIES', '')  # LinkedIn cookies JSON string
+
+# Update the headers section to include cookies if available
+def create_linkedin_session():
+    """Create session with LinkedIn cookies if available"""
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
+    if LINKEDIN_COOKIES:
+        try:
+            cookies = json.loads(LINKEDIN_COOKIES)
+            for name, value in cookies.items():
+                session.cookies.set(name, value, domain='.linkedin.com')
+            logger.info("✅ LinkedIn cookies loaded successfully")
+            print("✅ LinkedIn cookies: LOADED (Application URLs accessible)")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LinkedIn cookies JSON: {str(e)}")
+            print("⚠️ LinkedIn cookies: INVALID JSON")
+        except Exception as e:
+            logger.error(f"Error loading LinkedIn cookies: {str(e)}")
+            print("⚠️ LinkedIn cookies: ERROR")
+    else:
+        logger.warning("No LinkedIn cookies provided - some application URLs may require login")
+        print("⚠️ LinkedIn cookies: NOT PROVIDED (Limited application URL access)")
+    
+    # Update headers with cookies support
+    session.headers.update(headers)
+    return session
+
+# Update the crawl function to use the new session creator
 def crawl(wp_headers, processed_ids, licensed):
     """Main crawling function"""
     logger.info(f"Starting crawl for country={COUNTRY}, keyword={KEYWORD or 'ALL JOBS'}, licensed={licensed}")
+    logger.info(f"LinkedIn cookies available: {'Yes' if LINKEDIN_COOKIES else 'No'}")
     
     success_count = 0
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
-    pages_to_scrape = 5  # Reduced for testing
+    pages_to_scrape = 5
     
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
+    session = create_linkedin_session()  # Use cookie-enabled session
     
     for i in range(start_page, start_page + pages_to_scrape):
         url = build_search_url(i)
         logger.info(f"Fetching page {i}: {url}")
         
-        time.sleep(random.uniform(3, 7))  # Reduced delay for testing
+        time.sleep(random.uniform(3, 7))
         
         try:
-            response = session.get(url, headers=headers, timeout=20)
+            response = session.get(url, timeout=20)
             response.raise_for_status()
             
             if "login" in response.url.lower() or "challenge" in response.url.lower():
                 logger.error("Login or CAPTCHA detected, stopping crawl")
+                if LINKEDIN_COOKIES:
+                    logger.warning("Cookies may be expired or invalid")
                 break
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -853,7 +886,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 logger.warning(f"No jobs found on page {i}, possibly end of results")
                 break
             
-            for index, job_url in enumerate(urls[:3]):  # Limit to 3 jobs per page for testing
+            for index, job_url in enumerate(urls[:3]):
                 logger.info(f"Processing job {index + 1}/{len(urls)}: {job_url}")
                 
                 job_data = scrape_job_details(job_url, licensed, session)
@@ -861,6 +894,7 @@ def crawl(wp_headers, processed_ids, licensed):
                     failure_count += 1
                     continue
                 
+                # Rest of the crawl logic remains the same...
                 job_dict = dict(zip([
                     "job_title", "company_logo", "company_name", "company_url", "location",
                     "environment", "job_type", "level", "job_functions", "industries",
@@ -889,14 +923,12 @@ def crawl(wp_headers, processed_ids, licensed):
                 
                 total_jobs += 1
                 
-                # Save company
                 company_id, company_msg = save_company_to_wordpress(index, job_dict, wp_headers, licensed)
                 if not company_id:
                     logger.error(f"Failed to save company: {company_msg}")
                     failure_count += 1
                     continue
                 
-                # Save job
                 job_post_id, job_msg = save_article_to_wordpress(index, job_dict, company_id, wp_headers, licensed)
                 
                 if job_post_id:
@@ -908,7 +940,7 @@ def crawl(wp_headers, processed_ids, licensed):
                     failure_count += 1
                     print(f"✗ Failed: {job_title} at {company_name} - {job_msg}")
                 
-                time.sleep(random.uniform(2, 5))  # Rate limiting
+                time.sleep(random.uniform(2, 5))
             
             save_last_page(i + 1)
             
@@ -925,29 +957,23 @@ def crawl(wp_headers, processed_ids, licensed):
     print(f"Successfully saved: {success_count}")
     print(f"Failed: {failure_count}")
     print(f"License status: {'FULL ACCESS' if licensed else 'BASIC ACCESS ONLY'}")
+    print(f"LinkedIn cookies: {'ENABLED' if LINKEDIN_COOKIES else 'DISABLED'}")
 
+# Update main() function to show cookie status
 def main():
-    """Main execution function"""
     try:
         logger.info("Starting LinkedIn Job Fetcher")
         print("🚀 Starting LinkedIn Job Fetcher...")
         print(f"📍 Country: {COUNTRY}")
         print(f"🔍 Keyword: {KEYWORD or 'ALL JOBS'}")
+        print(f"🍪 LinkedIn Cookies: {'Yes' if LINKEDIN_COOKIES else 'No'}")
         
-        # Validate environment (LICENSE_KEY is optional)
         validate_environment()
-        
-        # FIXED: Check license with proper LICENSE_KEY validation
         licensed = get_license_status()
-        
-        # Create WP headers
         wp_headers = create_wp_auth_headers()
-        
-        # Load processed IDs
         processed_ids = load_processed_ids()
         print(f"📋 Found {len(processed_ids)} previously processed jobs")
         
-        # Start crawling
         crawl(wp_headers, processed_ids, licensed)
         
         print("✅ Job fetcher completed!")
@@ -961,6 +987,8 @@ def main():
         logger.error(f"Fatal error: {str(e)}", exc_info=True)
         print(f"❌ Fatal error: {str(e)}")
         sys.exit(1)
+
+
 
 if __name__ == "__main__":
     main()
