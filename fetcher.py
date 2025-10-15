@@ -856,11 +856,11 @@ def crawl(wp_headers, processed_ids, licensed):
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
-    pages_to_scrape = 5
     
     session = create_linkedin_session()  # Use cookie-enabled session
     
-    for i in range(start_page, start_page + pages_to_scrape):
+    i = start_page
+    while True:
         url = build_search_url(i)
         logger.info(f"Fetching page {i}: {url}")
         
@@ -886,7 +886,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 logger.warning(f"No jobs found on page {i}, possibly end of results")
                 break
             
-            for index, job_url in enumerate(urls[:3]):
+            for index, job_url in enumerate(urls):
                 logger.info(f"Processing job {index + 1}/{len(urls)}: {job_url}")
                 
                 job_data = scrape_job_details(job_url, licensed, session)
@@ -943,6 +943,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 time.sleep(random.uniform(2, 5))
             
             save_last_page(i + 1)
+            i += 1
             
         except Exception as e:
             logger.error(f"Error processing page {i}: {str(e)}")
