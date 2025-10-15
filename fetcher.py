@@ -359,71 +359,87 @@ def save_last_page(page):
         logger.error(f"Failed to save last page: {str(e)}")
 
 def scrape_job_details(job_url, licensed, session):
-    """Scrape detailed job information from LinkedIn"""
+    """Scrape detailed job information from LinkedIn with improved selectors"""
     try:
         response = session.get(job_url, headers=headers, timeout=15)
         response.raise_for_status()
-        
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Basic job info
+        # Job title
         job_title = soup.select_one("h1.top-card-layout__title")
         job_title = job_title.get_text().strip() if job_title else ''
+        logger.info(f'Scraped Job Title: {job_title}')
         
+        # Company logo (licensed only)
         company_logo = ''
         if licensed:
-            logo_elem = soup.select_one("div.top-card-layout__entity-info-container a img")
-            company_logo = (logo_elem.get('data-delayed-url') or logo_elem.get('src') or '') if logo_elem else ''
+            logo_selectors = [
+                "div.top-card-layout__entity-info-container a img",
+                "#main-content > section.core-rail img[data-delayed-url]",
+                ".topcard__image img"
+            ]
+            for selector in logo_selectors:
+                logo_elem = soup.select_one(selector)
+                if logo_elem:
+                    company_logo = logo_elem.get('data-delayed-url') or logo_elem.get('src') or ''
+                    break
+            logger.info(f'Scraped Company Logo: {company_logo}')
         
+        # Company name and URL
         company_name = soup.select_one(".topcard__org-name-link")
         company_name = company_name.get_text().strip() if company_name else ''
+        logger.info(f'Scraped Company Name: {company_name}')
         
         company_url = ''
         if licensed and company_name:
             company_url_elem = soup.select_one(".topcard__org-name-link")
             if company_url_elem and company_url_elem.get('href'):
                 company_url = re.sub(r'\?.*$', '', company_url_elem['href'])
+                logger.info(f'Scraped Company URL: {company_url}')
         
+        # Location
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
         location = location.get_text().strip() if location else COUNTRY or 'Worldwide'
         location_parts = [part.strip() for part in location.split(',') if part.strip()]
         location = ', '.join(dict.fromkeys(location_parts))
+        logger.info(f'Location: {location}')
         
+        # Environment (Remote/Hybrid/Onsite)
         environment = ''
-        if licensed:
-            env_elements = soup.select(".topcard__flavor--metadata")
-            for elem in env_elements:
-                text = elem.get_text().strip().lower()
-                if any(word in text for word in ['remote', 'hybrid', 'on-site', 'onsite']):
-                    environment = elem.get_text().strip()
-                    break
+        env_elements = soup.select(".topcard__flavor--metadata")
+        for elem in env_elements:
+            text = elem.get_text().strip().lower()
+            if any(word in text for word in ['remote', 'hybrid', 'on-site', 'onsite']):
+                environment = elem.get_text().strip()
+                break
+        logger.info(f'Environment: {environment}')
         
+        # Job type with better mapping
         job_type_elem = soup.select_one(".description__job-criteria-list > li:nth-child(2) > span")
         job_type = job_type_elem.get_text().strip() if job_type_elem else ''
         job_type = FRENCH_TO_ENGLISH_JOB_TYPE.get(job_type, job_type)
+        logger.info(f'Job Type: {job_type}')
         
-        # Licensed fields only
-        level = '' if licensed else UNLICENSED_MESSAGE
-        job_functions = '' if licensed else UNLICENSED_MESSAGE
-        industries = '' if licensed else UNLICENSED_MESSAGE
-        if licensed:
-            level_elem = soup.select_one(".description__job-criteria-list > li:nth-child(1) > span")
-            level = level_elem.get_text().strip() if level_elem else ''
-            
-            functions_elem = soup.select_one(".description__job-criteria-list > li:nth-child(3) > span")
-            job_functions = functions_elem.get_text().strip() if functions_elem else ''
-            
-            industries_elem = soup.select_one(".description__job-criteria-list > li:nth-child(4) > span")
-            industries = industries_elem.get_text().strip() if industries_elem else ''
-        
-        # Job description
+        # FIXED: Improved Job Description extraction
         job_description = UNLICENSED_MESSAGE if not licensed else ''
         if licensed:
-            desc_container = soup.select_one(".show-more-less-html__markup")
-            if desc_container:
-                paragraphs = desc_container.find_all(['p', 'li'], recursive=False)
+            desc_selectors = [
+                ".show-more-less-html__markup",
+                "[data-job-description-section] .show-more-less-html__markup",
+                ".description__text"
+            ]
+            description_container = None
+            for selector in desc_selectors:
+                description_container = soup.select_one(selector)
+                if description_container:
+                    break
+            
+            if description_container:
+                # Extract paragraphs and clean duplicates
+                paragraphs = description_container.find_all(['p', 'li', 'div'], recursive=False)
                 seen = set()
                 unique_paras = []
+                
                 for p in paragraphs:
                     para = sanitize_text(p.get_text().strip())
                     if para:
@@ -431,24 +447,43 @@ def scrape_job_details(job_url, licensed, session):
                         if norm_para not in seen:
                             unique_paras.append(para)
                             seen.add(norm_para)
+                
                 job_description = '\n\n'.join(unique_paras)
-                job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description).strip()
+                # Remove LinkedIn UI text
+                job_description = re.sub(r'(?i)(show more|show less|click here).*', '', job_description)
                 job_description = split_paragraphs(job_description)
+                logger.info(f'Job Description: {len(job_description)} chars')
+            else:
+                logger.warning('No job description container found')
         
+        # FIXED: Improved Application URL extraction
         application_url = ''
         if licensed:
-            app_anchor = soup.select_one("#teriary-cta-container > div > a, .jobs-apply-button--top-card")
-            application_url = app_anchor['href'] if app_anchor and app_anchor.get('href') else ''
+            app_selectors = [
+                "#teriary-cta-container > div > a",
+                ".jobs-apply-button--top-card",
+                ".jobs-apply-button",
+                "[data-test-apply-button]"
+            ]
+            for selector in app_selectors:
+                app_anchor = soup.select_one(selector)
+                if app_anchor and app_anchor.get('href'):
+                    application_url = app_anchor['href']
+                    # Follow redirect for external application URLs
+                    try:
+                        app_response = session.get(application_url, allow_redirects=True, timeout=10)
+                        application_url = app_response.url
+                        logger.info(f'Resolved Application URL: {application_url}')
+                    except:
+                        pass
+                    break
         
-        # Company details (simplified)
-        company_details = '' if licensed else UNLICENSED_MESSAGE
-        company_website_url = '' if licensed else UNLICENSED_MESSAGE
-        company_industry = '' if licensed else UNLICENSED_MESSAGE
-        company_size = '' if licensed else UNLICENSED_MESSAGE
-        company_headquarters = '' if licensed else UNLICENSED_MESSAGE
-        company_type = '' if licensed else UNLICENSED_MESSAGE
-        company_founded = '' if licensed else UNLICENSED_MESSAGE
-        company_address = '' if licensed else UNLICENSED_MESSAGE
+        # Company details scraping (licensed only)
+        company_details = UNLICENSED_MESSAGE if not licensed else ''
+        company_website_url = UNLICENSED_MESSAGE if not licensed else ''
+        company_industry = UNLICENSED_MESSAGE if not licensed else ''
+        company_founded = UNLICENSED_MESSAGE if not licensed else ''
+        company_address = UNLICENSED_MESSAGE if not licensed else ''
         
         if licensed and company_url:
             try:
@@ -456,37 +491,135 @@ def scrape_job_details(job_url, licensed, session):
                 company_response.raise_for_status()
                 company_soup = BeautifulSoup(company_response.text, 'html.parser')
                 
-                details_elem = company_soup.select_one("p.about-us__description")
-                company_details = details_elem.get_text().strip() if details_elem else ''
+                # FIXED: Better company details extraction
+                details_selectors = [
+                    "p.about-us__description",
+                    ".about-us__description",
+                    "section.core-section-container p",
+                    "[data-test-company-overview] p"
+                ]
+                for selector in details_selectors:
+                    details_elem = company_soup.select_one(selector)
+                    if details_elem:
+                        company_details = sanitize_text(details_elem.get_text().strip())
+                        break
                 
-                def get_company_field(label):
-                    elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
-                    for elem in elements:
-                        dt = elem.find("dt")
-                        if dt and label.lower() in dt.get_text().strip().lower():
-                            dd = elem.find("dd")
-                            return dd.get_text().strip() if dd else ''
-                    return ''
+                # FIXED: Improved website extraction with redirect handling
+                website_selectors = [
+                    "dl > div:nth-child(1) > dd > a",
+                    ".org-about__website a",
+                    "[data-test-company-website] a"
+                ]
+                for selector in website_selectors:
+                    website_anchor = company_soup.select_one(selector)
+                    if website_anchor and website_anchor.get('href'):
+                        company_website_url = website_anchor['href']
+                        # Handle LinkedIn redirect URLs
+                        if 'linkedin.com/redir/redirect' in company_website_url:
+                            parsed = urlparse(company_website_url)
+                            params = parse_qs(parsed.query)
+                            if 'url' in params:
+                                company_website_url = unquote(params['url'][0])
+                                # Follow final redirect
+                                try:
+                                    web_resp = session.get(company_website_url, allow_redirects=True, timeout=10)
+                                    company_website_url = web_resp.url
+                                except:
+                                    pass
+                        logger.info(f'Company Website: {company_website_url}')
+                        break
                 
-                company_industry = get_company_field("Industry")
-                company_size = get_company_field("Company size")
-                company_headquarters = get_company_field("Headquarters")
-                company_type = get_company_field("Type")
-                company_founded = get_company_field("Founded")
+                # FIXED: Better structured data extraction using DL elements
+                dl_elements = company_soup.select("dl > div")
+                for dl_elem in dl_elements:
+                    dt = dl_elem.find("dt")
+                    dd = dl_elem.find("dd")
+                    if not dt or not dd:
+                        continue
+                    
+                    label = dt.get_text().strip().lower()
+                    value = sanitize_text(dd.get_text().strip())
+                    
+                    if 'industry' in label:
+                        company_industry = value
+                    elif 'founded' in label or 'year founded' in label:
+                        company_founded = value
+                    elif 'headquarters' in label or 'location' in label:
+                        company_address = value
+                    elif 'type' in label:
+                        company_type = value
+                    elif 'size' in label:
+                        company_size = value
+                
+                # Fallback: Extract from description if structured data missing
+                if not company_industry and company_details:
+                    industry_patterns = [
+                        r'(?:industry|sector)[:\s]*([^\n\.]{10,})',
+                        r'we are a ([^\n\.]{10,}) company'
+                    ]
+                    for pattern in industry_patterns:
+                        match = re.search(pattern, company_details, re.IGNORECASE)
+                        if match:
+                            company_industry = match.group(1).strip()
+                            break
+                
+                logger.info(f'Company Details: {company_industry}, {company_founded}, {company_address}')
                 
             except Exception as e:
-                logger.error(f"Error fetching company details: {str(e)}")
+                logger.error(f'Company page error: {str(e)}')
+                company_details = 'Company details unavailable'
         
-        row = [
-            job_title, company_logo, company_name, company_url, location, environment,
-            job_type, level, job_functions, industries, job_description, job_url,
-            company_details, company_website_url, company_industry, company_size,
-            company_headquarters, company_type, company_founded, '', company_address,
-            application_url, '', '', '', '', '', ''
-        ]
-        return row
+        # Job criteria (licensed only)
+        level = UNLICENSED_MESSAGE if not licensed else ''
+        job_functions = UNLICENSED_MESSAGE if not licensed else ''
+        industries = UNLICENSED_MESSAGE if not licensed else ''
+        
+        if licensed:
+            criteria_selectors = [
+                ".description__job-criteria-list > li:nth-child(1) > span",  # Level
+                ".description__job-criteria-list > li:nth-child(3) > span",  # Functions
+                ".description__job-criteria-list > li:nth-child(4) > span"   # Industries
+            ]
+            
+            try:
+                level_elem = soup.select_one(criteria_selectors[0])
+                level = level_elem.get_text().strip() if level_elem else ''
+                
+                functions_elem = soup.select_one(criteria_selectors[1])
+                job_functions = functions_elem.get_text().strip() if functions_elem else ''
+                
+                ind_elem = soup.select_one(criteria_selectors[2])
+                industries = ind_elem.get_text().strip() if ind_elem else ''
+            except:
+                pass
+        
+        # Return comprehensive job data
+        return {
+            'job_title': job_title,
+            'company_logo': company_logo,
+            'company_name': company_name,
+            'company_url': company_url,
+            'location': location,
+            'environment': environment,
+            'job_type': job_type,
+            'level': level,
+            'job_functions': job_functions,
+            'industries': industries,
+            'job_description': job_description,
+            'job_url': job_url,
+            'application': application_url,
+            'company_details': company_details,
+            'company_website_url': company_website_url,
+            'company_industry': company_industry,
+            'company_founded': company_founded,
+            'company_address': company_address,
+            'company_type': '',
+            'company_size': '',
+            'company_headquarters': company_address  # Use address as fallback
+        }
+        
     except Exception as e:
-        logger.error(f"Error scraping job {job_url}: {str(e)}")
+        logger.error(f'Failed to scrape job {job_url}: {str(e)}')
         return None
 
 def crawl(wp_headers, processed_ids, licensed):
