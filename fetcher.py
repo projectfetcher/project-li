@@ -1,4 +1,5 @@
 import requests
+from requests import Session  # Add this line
 from bs4 import BeautifulSoup
 import logging
 import time
@@ -900,7 +901,7 @@ def verify_cookies(session):
 
 def create_linkedin_session_with_auth():
     """Create authenticated LinkedIn session with manual cookie handling"""
-    session = Session()
+    session = requests.Session()  # Use requests.Session() instead of Session()
     
     # Configure retries for robustness
     retry_strategy = Retry(
@@ -914,6 +915,7 @@ def create_linkedin_session_with_auth():
     session.mount("https://", adapter)
     
     # Load LinkedIn cookies (Method 1 - manual JSON)
+    loaded_cookies = False
     if LINKEDIN_COOKIES:
         try:
             cookies = json.loads(LINKEDIN_COOKIES)
@@ -929,9 +931,11 @@ def create_linkedin_session_with_auth():
                         session.cookies.set(name, value)
                         loaded_count += 1
                         logger.debug(f"Loaded cookie: {name}")
+                        if name == 'li_at':
+                            loaded_cookies = True
             
             logger.info(f"✅ Successfully loaded {loaded_count} LinkedIn cookies")
-            print(f"🍪 Loaded {loaded_count} cookies (li_at: {'✅' if any(c.get('name') == 'li_at' for c in cookies) else '❌'})")
+            print(f"🍪 Loaded {loaded_count} cookies (li_at: {'✅' if loaded_cookies else '❌'})")
             
         except json.JSONDecodeError as e:
             logger.error(f"❌ Invalid JSON in LinkedIn cookies: {str(e)}")
@@ -946,7 +950,7 @@ def create_linkedin_session_with_auth():
     # Set realistic browser headers
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
         'DNT': '1',
@@ -956,10 +960,7 @@ def create_linkedin_session_with_auth():
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-        'Sec-Ch-Ua': '"Google Chrome";v="120", "Chromium";v="120", "Not?A_Brand";v="24"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"'
+        'Cache-Control': 'max-age=0'
     })
     
     return session
@@ -975,7 +976,12 @@ def crawl(wp_headers, processed_ids, licensed):
     start_page = load_last_page() or 0
     
     # Create authenticated session
-    session = create_linkedin_session_with_auth()
+    try:
+        session = create_linkedin_session_with_auth()
+    except Exception as e:
+        logger.error(f"❌ Failed to create LinkedIn session: {str(e)}")
+        print("❌ Session creation failed")
+        return
     
     # Initial test request
     test_url = build_search_url(start_page)
@@ -991,14 +997,15 @@ def crawl(wp_headers, processed_ids, licensed):
             return
         
         # Save debug HTML for inspection
-        debug_file = f"debug_page_{start_page}.html"
+        debug_file = f"uploads/debug_page_{start_page}.html"
+        os.makedirs("uploads", exist_ok=True)
         with open(debug_file, "w", encoding="utf-8") as f:
             f.write(test_response.text)
         logger.info(f"💾 Debug HTML saved: {debug_file}")
         
         print("✅ LinkedIn access confirmed")
         
-    except RequestException as e:
+    except requests.exceptions.RequestException as e:
         logger.error(f"❌ Network test failed: {str(e)}")
         print("❌ Network error - check connection")
         return
@@ -1029,18 +1036,16 @@ def crawl(wp_headers, processed_ids, licensed):
             
             # Multiple selector strategies for job cards
             job_selectors = [
-                # Current LinkedIn patterns
-                '.jobs-search-results__list li',
+                # Try most likely current selectors first
                 'li[data-occludable-job-id]',
                 '[data-occludable-job-id]',
+                '.jobs-search-results__list li',
                 '.job-search-card',
                 '.reusable-search__result-container',
-                '.job-card-container',
                 # Fallback patterns
                 '.jobs-search__results-list li',
                 'ul.jobs-search-results__list li',
-                'div.job-search-results li',
-                # Broad search
+                # Broad search for job links
                 'a[href*="/jobs/view/"]',
                 'a[href*="/job/"]'
             ]
@@ -1055,7 +1060,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 if elements:
                     logger.info(f"✓ Active selector: {selector} ({len(elements)} elements)")
                     
-                    for elem in elements:
+                    for elem in elements[:25]:  # Limit processing
                         # Extract job URLs from element
                         links = elem.select('a[href*="/jobs/view/"], a[href*="/job/"], a[data-job-id]')
                         
@@ -1075,6 +1080,7 @@ def crawl(wp_headers, processed_ids, licensed):
             
             # Fallback: search all links for job patterns
             if not job_urls:
+                logger.info("🔍 No job cards found, searching all links...")
                 all_links = soup.find_all('a', href=True)
                 for link in all_links:
                     href = link.get('href', '')
@@ -1083,15 +1089,21 @@ def crawl(wp_headers, processed_ids, licensed):
                             full_url = 'https://www.linkedin.com' + href
                         else:
                             full_url = href
-                        job_urls.add(full_url)
+                        if full_url not in job_urls:
+                            job_urls.add(full_url)
                 
                 logger.info(f"🔍 Fallback found {len(job_urls)} potential job URLs")
             
-            job_urls_list = list(job_urls)[:25]  # Limit per page
+            job_urls_list = list(job_urls)[:10]  # Reduced limit for testing
             logger.info(f"🎯 Processing {len(job_urls_list)} jobs on page {page_num}")
             
             if not job_urls_list:
                 logger.warning(f"📭 No jobs found on page {page_num}")
+                # Save current page HTML for debugging
+                debug_page_file = f"uploads/debug_page_{page_num}.html"
+                with open(debug_page_file, "w", encoding="utf-8") as f:
+                    f.write(response.text)
+                logger.info(f"💾 Empty page debug saved: {debug_page_file}")
                 empty_pages += 1
                 save_last_page(page_num + 1)
                 page_num += 1
@@ -1121,16 +1133,22 @@ def crawl(wp_headers, processed_ids, licensed):
                         "final_application_url", "resolved_application_url"
                     ]
                     
-                    job_dict = dict(zip(field_names, job_data))
+                    # Fix: job_data should have 26 elements, but field_names has 26 - add job_url
+                    if len(job_data) == 26:
+                        job_data.append(job_url)  # Add job_url if missing
+                    elif len(job_data) < len(field_names):
+                        # Pad with empty strings
+                        job_data.extend([''] * (len(field_names) - len(job_data)))
+                    
+                    job_dict = dict(zip(field_names, job_data[:len(field_names)]))
                     job_dict["job_salary"] = ""
-                    job_dict["job_url"] = job_url  # Ensure URL is saved
                     
                     # Validate essential fields
                     job_title = job_dict.get("job_title", "").strip()
                     company_name = job_dict.get("company_name", "").strip()
                     
                     if not job_title or not company_name:
-                        logger.warning(f"⏭️ Skipping incomplete job: {job_title} - {company_name}")
+                        logger.warning(f"⏭️ Skipping incomplete job: '{job_title}' - '{company_name}'")
                         failure_count += 1
                         continue
                     
@@ -1171,7 +1189,7 @@ def crawl(wp_headers, processed_ids, licensed):
                     time.sleep(random.uniform(3, 7))
                 
                 except Exception as e:
-                    logger.error(f"❌ Job processing error: {str(e)}")
+                    logger.error(f"❌ Job processing error: {str(e)}", exc_info=True)
                     failure_count += 1
                     continue
             
@@ -1179,13 +1197,13 @@ def crawl(wp_headers, processed_ids, licensed):
             save_last_page(page_num + 1)
             page_num += 1
             
-        except RequestException as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"🌐 Network error on page {page_num}: {str(e)}")
             empty_pages += 1
-            time.sleep(15)  # Longer wait on errors
+            time.sleep(15)
             continue
         except Exception as e:
-            logger.error(f"💥 Unexpected error page {page_num}: {str(e)}")
+            logger.error(f"💥 Unexpected error page {page_num}: {str(e)}", exc_info=True)
             empty_pages += 1
             continue
     
