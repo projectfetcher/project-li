@@ -901,16 +901,27 @@ def verify_cookies(session):
 
 def create_linkedin_session_with_auth():
     """Create authenticated LinkedIn session with manual cookie handling"""
-    # FIXED: Use requests.Session() directly - no import needed
+    # Create session
     session = requests.Session()
     
-    # Configure retries for robustness
-    retry_strategy = Retry(
-        total=5,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        method_whitelist=["HEAD", "GET", "OPTIONS"]
-    )
+    # Configure retries - FIXED: Use allowed_methods instead of deprecated method_whitelist
+    try:
+        # Try new syntax first (urllib3 2.0+)
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"]
+        )
+    except TypeError:
+        # Fallback for older urllib3 versions
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            method_whitelist=["HEAD", "GET", "OPTIONS"]
+        )
+    
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
