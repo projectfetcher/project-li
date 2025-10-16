@@ -979,7 +979,7 @@ def create_linkedin_session_with_auth():
     return session
 
 def crawl(wp_headers, processed_ids, licensed):
-    """Main crawling function with robust LinkedIn job extraction and modern selectors"""
+    """Main crawling function optimized for requests-only LinkedIn extraction"""
     logger.info(f"🚀 Starting crawl: Country={COUNTRY}, Keyword={KEYWORD or 'ALL JOBS'}, Licensed={licensed}")
     logger.info(f"🍪 LinkedIn cookies: {'Yes' if LINKEDIN_COOKIES else 'No'}")
     
@@ -1001,25 +1001,20 @@ def crawl(wp_headers, processed_ids, licensed):
     logger.info(f"🧪 Testing access: {test_url}")
     
     try:
-        test_response = session.get(test_url, timeout=20)
+        test_response = session.get(test_url, timeout=30)
         test_response.raise_for_status()
         
-        if "login" in test_response.url.lower() or "challenge" in test_response.url.lower():
+        if any(redirect in test_response.url.lower() for redirect in ["login", "challenge", "captcha"]):
             logger.error("❌ LinkedIn login required - check cookies")
             print("❌ LOGIN REQUIRED - Update cookies")
             return
         
-        # Save debug HTML for inspection
-        debug_file = f"uploads/debug_page_{start_page}.html"
+        # Save debug HTML
         os.makedirs("uploads", exist_ok=True)
+        debug_file = f"uploads/debug_page_{start_page}.html"
         with open(debug_file, "w", encoding="utf-8") as f:
             f.write(test_response.text)
         logger.info(f"💾 Debug HTML saved: {debug_file}")
-        
-        # Check if page contains job content
-        if "jobs-search" not in test_response.text and "job-card" not in test_response.text.lower():
-            logger.warning("⚠️ Page might be JavaScript rendered - consider using Selenium")
-            print("⚠️ Warning: Page may require JavaScript rendering")
         
         print("✅ LinkedIn access confirmed")
         
@@ -1031,185 +1026,64 @@ def crawl(wp_headers, processed_ids, licensed):
     # Main crawling loop
     page_num = start_page
     empty_pages = 0
-    max_empty_pages = 5
+    max_empty_pages = 10  # Increased tolerance
     
     while empty_pages < max_empty_pages:
         url = build_search_url(page_num)
         logger.info(f"📄 Fetching page {page_num}: {url}")
         
-        # Random delay to avoid detection
-        time.sleep(random.uniform(5, 12))
+        # Random delay
+        time.sleep(random.uniform(8, 15))
         
         try:
-            response = session.get(url, timeout=30)
+            response = session.get(url, timeout=40)
             response.raise_for_status()
             
-            # Check for login/blocks
-            if any(x in response.url.lower() for x in ["login", "challenge", "captcha"]):
-                logger.error("🔒 Login wall detected - session expired")
-                print("🔒 Session expired - get fresh cookies")
+            # Check for blocks
+            if any(block in response.url.lower() for block in ["login", "challenge", "captcha"]):
+                logger.error("🔒 Session expired - get fresh cookies")
                 break
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Save page HTML for debugging
-            debug_page_file = f"uploads/debug_page_{page_num}.html"
-            with open(debug_page_file, "w", encoding="utf-8") as f:
+            # Save page for debugging
+            debug_file = f"uploads/debug_page_{page_num}.html"
+            with open(debug_file, "w", encoding="utf-8") as f:
                 f.write(response.text)
             
-            # Modern LinkedIn job selectors (2025)
-            job_selectors = [
-                # Primary modern selectors
-                'section[data-test-id="job-search-results-list"] li',
-                '.jobs-search__results-list li',
-                '.jobs-search-results__list li',
-                'li[data-occludable-job-id]',
-                '[data-occludable-job-id]',
-                '.job-card-list__card',
-                '.occludable-job-card',
-                
-                # Alternative patterns
-                '[data-test-id*="job-"]',
-                'li[role="listitem"]',
-                '.job-search-card',
-                '.reusable-search__result-container',
-                '.job-card-container',
-                
-                # Legacy selectors
-                '.jobs-search__results-list li',
-                'ul.jobs-search-results__list li',
-                'div.job-search-results li'
-            ]
+            job_urls = extract_job_urls_from_page(response.text, soup)
+            logger.info(f"🎯 Extracted {len(job_urls)} job URLs from page {page_num}")
             
-            job_urls = set()
-            
-            # Try CSS selectors first
-            for selector in job_selectors:
-                elements = soup.select(selector)
-                logger.debug(f"Selector '{selector}': {len(elements)} elements")
-                
-                if elements:
-                    logger.info(f"✓ Active selector: {selector} ({len(elements)} elements)")
-                    
-                    for elem in elements[:30]:  # Limit processing
-                        # Extract job links from element
-                        job_links = elem.select(
-                            'a[href*="/jobs/view/"], '
-                            'a[href*="/job/"], '
-                            'a[data-job-id], '
-                            'a[href*="jobs/view"]'
-                        )
-                        
-                        if not job_links:
-                            # Broader search within element
-                            job_links = elem.select('a[href*="jobs"], a[href*="/view/"]')
-                        
-                        for link in job_links:
-                            href = link.get('href', '')
-                            if href and any(pattern in href for pattern in ['/jobs/view/', '/job/']):
-                                # Make absolute URL
-                                full_url = href if href.startswith('http') else 'https://www.linkedin.com' + href
-                                # Clean URL parameters but preserve jobId
-                                full_url = re.sub(r'(&|&)trk=.*', '', full_url)
-                                job_urls.add(full_url)
-                                logger.debug(f"Found job URL: {full_url}")
-            
-            # Enhanced regex fallback if no CSS matches
-            if not job_urls:
-                logger.info("🔍 Enhanced regex fallback - searching entire page...")
-                
-                # Multiple regex patterns for job URLs
-                job_patterns = [
-                    r'href=[\'"](https?://www\.linkedin\.com/jobs/view/\d+[^\'"]*)[\'"]',
-                    r'href=[\'"/jobs/view/\d+[^\'"> ]*[\'"> ]',
-                    r'data-job-id=[\'"](\d+)[\'"]',
-                    r'jobId=(\d+)',
-                    r'/jobs/view/(\d+)',
-                    r'"jobUrl":"([^"]*/jobs/view/\d+[^"]*)"'
-                ]
-                
-                for pattern in job_patterns:
-                    matches = re.findall(pattern, response.text, re.IGNORECASE | re.DOTALL)
-                    for match in matches:
-                        if isinstance(match, tuple):
-                            match = match[0]
-                        
-                        # Construct valid job URL from match
-                        if '/jobs/view/' in match:
-                            full_url = match if match.startswith('http') else 'https://www.linkedin.com' + match
-                            job_urls.add(full_url)
-                        elif match.isdigit() and len(match) > 5:
-                            # Job ID found, construct URL
-                            full_url = f'https://www.linkedin.com/jobs/view/{match}'
-                            job_urls.add(full_url)
-                
-                logger.info(f"🔍 Regex found {len(job_urls)} potential job URLs")
-            
-            # Additional fallback: JSON data in script tags
-            if not job_urls:
-                logger.info("🔍 Searching JSON data in script tags...")
-                scripts = soup.find_all('script', type='application/ld+json')
-                for script in scripts:
-                    try:
-                        job_data = json.loads(script.string)
-                        if isinstance(job_data, list):
-                            for item in job_data:
-                                if item.get('@type') == 'JobPosting' and item.get('url'):
-                                    job_urls.add(item['url'])
-                        elif isinstance(job_data, dict) and job_data.get('@type') == 'JobPosting':
-                            if job_data.get('url'):
-                                job_urls.add(job_data['url'])
-                    except:
-                        continue
-                
-                # Search for inline JSON with job data
-                inline_json_matches = re.findall(r'"jobId":\s*(\d+)', response.text)
-                for job_id in inline_json_matches:
-                    if len(job_id) > 5:
-                        job_urls.add(f'https://www.linkedin.com/jobs/view/{job_id}')
-            
-            # Validate and clean job URLs
+            # Validate URLs
             job_urls_list = []
             for url in job_urls:
-                if '/jobs/view/' in url and 'linkedin.com' in url:
-                    # Extract and validate job ID
-                    job_id_match = re.search(r'/jobs/view/(\d+)', url)
-                    if job_id_match and len(job_id_match.group(1)) > 5:
-                        # Clean URL
-                        clean_url = re.sub(r'(&|&)trk=.*', '', url)
-                        job_urls_list.append(clean_url)
+                if validate_job_url(url):
+                    job_urls_list.append(url)
             
-            # Remove duplicates and limit
-            job_urls_list = list(dict.fromkeys(job_urls_list))[:15]  # Dedupe and limit
-            
-            logger.info(f"🎯 Validated {len(job_urls_list)} unique job URLs for page {page_num}")
+            job_urls_list = list(dict.fromkeys(job_urls_list))[:20]  # Dedupe and limit
             
             if not job_urls_list:
                 logger.warning(f"📭 No valid jobs found on page {page_num}")
-                logger.info(f"💾 Debug HTML saved: {debug_page_file}")
                 empty_pages += 1
                 save_last_page(page_num + 1)
                 page_num += 1
                 continue
             
-            empty_pages = 0  # Reset counter when jobs found
+            empty_pages = 0
             
-            # Process each job
+            # Process jobs
             for idx, job_url in enumerate(job_urls_list):
-                logger.info(f"🔄 Processing job {idx + 1}/{len(job_urls_list)}: {job_url}")
+                logger.info(f"🔄 Job {idx + 1}/{len(job_urls_list)}: {job_url}")
                 
                 try:
-                    # Additional delay between jobs
-                    if idx > 0:
-                        time.sleep(random.uniform(4, 8))
+                    time.sleep(random.uniform(5, 10))
                     
                     job_data = scrape_job_details(job_url, licensed, session)
                     if not job_data:
                         failure_count += 1
-                        logger.warning(f"Failed to scrape job details: {job_url}")
                         continue
                     
-                    # Map job data to dictionary with proper field alignment
+                    # Map data
                     field_names = [
                         "job_title", "company_logo", "company_name", "company_url", "location",
                         "environment", "job_type", "level", "job_functions", "industries",
@@ -1220,104 +1094,223 @@ def crawl(wp_headers, processed_ids, licensed):
                         "final_application_url", "resolved_application_url"
                     ]
                     
-                    # Ensure job_data has correct length
                     while len(job_data) < len(field_names):
                         job_data.append("")
                     
                     job_dict = dict(zip(field_names, job_data[:len(field_names)]))
                     job_dict["job_salary"] = ""
-                    job_dict["job_url"] = job_url  # Ensure URL is preserved
+                    job_dict["job_url"] = job_url
                     
-                    # Validate essential fields
                     job_title = job_dict.get("job_title", "").strip()
                     company_name = job_dict.get("company_name", "").strip()
                     
-                    if not job_title or not company_name or len(job_title) < 3:
-                        logger.warning(f"⏭️ Skipping incomplete job: '{job_title}' - '{company_name}'")
+                    if not job_title or not company_name:
+                        logger.warning(f"⏭️ Skipping incomplete: {job_title} - {company_name}")
                         failure_count += 1
                         continue
                     
-                    # Check for duplicates using normalized title + company
                     job_id = generate_id(f"{normalize_for_deduplication(job_title)}_{normalize_for_deduplication(company_name)}")
                     if job_id in processed_ids:
-                        logger.info(f"⏭️ Duplicate job skipped: {job_title[:50]}...")
+                        logger.info(f"⏭️ Duplicate skipped: {job_title[:40]}...")
                         total_jobs += 1
                         continue
                     
                     total_jobs += 1
-                    logger.info(f"📝 Processing new job: {job_title[:60]}... at {company_name}")
                     
-                    # Save company first
-                    company_id, company_msg = save_company_to_wordpress(
-                        idx, job_dict, wp_headers, licensed
-                    )
+                    # Save to WordPress
+                    company_id, company_msg = save_company_to_wordpress(idx, job_dict, wp_headers, licensed)
                     if not company_id:
-                        logger.error(f"💾 Company save failed: {company_msg}")
+                        logger.error(f"💾 Company failed: {company_msg}")
                         failure_count += 1
                         continue
                     
-                    # Save job
-                    job_post_id, job_msg = save_article_to_wordpress(
-                        idx, job_dict, company_id, wp_headers, licensed
-                    )
+                    job_post_id, job_msg = save_article_to_wordpress(idx, job_dict, company_id, wp_headers, licensed)
                     
                     if job_post_id:
                         processed_ids.add(job_id)
                         success_count += 1
                         emoji = "🔓" if licensed else "🔒"
                         print(f"{emoji} ✅ {job_title[:60]}... at {company_name}")
-                        logger.info(f"✅ Saved job: {job_title} at {company_name} (ID: {job_post_id})")
                     else:
                         failure_count += 1
-                        logger.error(f"💾 Job save failed: {job_msg}")
                         print(f"❌ Failed: {job_title[:50]}... - {job_msg}")
-                    
+                
                 except Exception as e:
-                    logger.error(f"❌ Job processing error for {job_url}: {str(e)}", exc_info=True)
+                    logger.error(f"❌ Job error {job_url}: {str(e)}")
                     failure_count += 1
                     continue
             
-            # Save progress after successful page
             save_last_page(page_num + 1)
             page_num += 1
             
-            # Longer delay after processing jobs
-            time.sleep(random.uniform(8, 15))
-            
         except requests.exceptions.RequestException as e:
-            logger.error(f"🌐 Network error on page {page_num}: {str(e)}")
+            logger.error(f"🌐 Network error page {page_num}: {str(e)}")
             empty_pages += 1
-            time.sleep(random.uniform(15, 30))  # Longer backoff
+            time.sleep(30)
             continue
         except Exception as e:
-            logger.error(f"💥 Unexpected error on page {page_num}: {str(e)}", exc_info=True)
+            logger.error(f"💥 Error page {page_num}: {str(e)}")
             empty_pages += 1
             continue
     
-    # Final cleanup and reporting
     save_processed_ids(processed_ids)
     
-    logger.info(f"🏁 Crawl completed: Total={total_jobs}, Success={success_count}, Failed={failure_count}")
     print(f"\n{'='*60}")
     print(f"📊 CRAWL SUMMARY")
     print(f"{'='*60}")
-    print(f"📍 Country: {COUNTRY}")
-    print(f"🔍 Keyword: {KEYWORD or 'ALL JOBS'}")
-    print(f"📄 Pages processed: {page_num}")
-    print(f"Total jobs processed: {total_jobs}")
-    print(f"Successfully saved: {success_count}")
-    print(f"Failed: {failure_count}")
-    print(f"License: {'🔓 FULL ACCESS' if licensed else '🔒 BASIC ACCESS'}")
-    print(f"Cookies: {'✅ ENABLED' if LINKEDIN_COOKIES else '⚠️ DISABLED'}")
-    print(f"Debug files: uploads/debug_page_*.html")
+    print(f"Total jobs: {total_jobs}, Success: {success_count}, Failed: {failure_count}")
+    print(f"License: {'🔓 FULL' if licensed else '🔒 BASIC'}")
+    print(f"Cookies: {'✅' if LINKEDIN_COOKIES else '⚠️'}")
+    print(f"Debug: uploads/debug_page_*.html")
     print(f"{'='*60}")
+
+def extract_job_urls_from_page(html_content, soup):
+    """Advanced job URL extraction without Selenium"""
+    job_urls = set()
     
-    if success_count == 0:
-        print("❌ No jobs found! Check debug HTML files and consider:")
-        print("   1. Using Selenium for JavaScript rendering")
-        print("   2. Adding specific keywords to search")
-        print("   3. Verifying cookies are still valid")
-        print("   4. Checking LinkedIn's current HTML structure")
+    # 1. COMPREHENSIVE REGEX PATTERNS
+    job_patterns = [
+        # Direct job URLs
+        r'(https?://www\.linkedin\.com/jobs/view/\d+[^"\s\'<>]+)',
+        r'href=[\'"](/jobs/view/\d+[^"\'>]+)[\'"]',
+        r'"jobUrl":"(/jobs/view/\d+[^"]+)"',
+        
+        # Job IDs in various formats
+        r'data-job-id=[\'""](\d+)[\'"]',
+        r'jobId["\']?\s*[:=]\s*["\']?(\d+)["\']?',
+        r'/jobs/view/(\d+)',
+        
+        # Embedded JSON job data
+        r'"jobTitle":"([^"]+)".*?"companyName":"([^"]+)".*?"jobUrl":"([^"]+)"',
+        r'"@type"["\s]*:["\s]*"JobPosting"[^}]*"url"["\s]*:["\s]*"([^"]+)"',
+    ]
+    
+    for pattern in job_patterns:
+        matches = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
+        for match in matches:
+            if isinstance(match, tuple):
+                match = match[0] if match[0] else match[-1]
+            
+            if '/jobs/view/' in match or (match.isdigit() and len(match) > 5):
+                if match.startswith('/'):
+                    full_url = 'https://www.linkedin.com' + match
+                elif match.startswith('http'):
+                    full_url = match
+                else:
+                    full_url = f'https://www.linkedin.com/jobs/view/{match}'
+                job_urls.add(full_url)
+    
+    # 2. JAVASCRIPT VARIABLE EXTRACTION
+    js_patterns = [
+        r'window\.initialServerState\s*=\s*({.*?});',
+        r'window\.__INITIAL_STATE__\s*=\s*({.*?});',
+        r'jobsSearchResults\s*[:=]\s*({.*?})',
+        r'jobResults\s*[:=]\s*(\[.*?\])',
+    ]
+    
+    for pattern in js_patterns:
+        matches = re.findall(pattern, html_content, re.DOTALL)
+        for match in matches:
+            try:
+                if match.startswith('{'):
+                    data = json.loads(match)
+                    extract_jobs_from_json(data, job_urls)
+                elif match.startswith('['):
+                    data = json.loads(match)
+                    for item in data:
+                        extract_jobs_from_json(item, job_urls)
+            except json.JSONDecodeError:
+                continue
+    
+    # 3. DATA ATTRIBUTES SCAN
+    data_attrs = soup.find_all(attrs={'data-job-id': True})
+    for elem in data_attrs:
+        job_id = elem.get('data-job-id')
+        if job_id and len(job_id) > 5:
+            job_urls.add(f'https://www.linkedin.com/jobs/view/{job_id}')
+    
+    # 4. LINK SCAN WITH CONTEXT
+    all_links = soup.find_all('a', href=True)
+    for link in all_links:
+        href = link.get('href', '')
+        text = link.get_text().strip().lower()
+        
+        # Look for job links near job-related text
+        if any(keyword in href for keyword in ['/jobs/view/', '/job/']) and \
+           any(job_context in text for job_context in ['apply', 'job', 'position']):
+            full_url = href if href.startswith('http') else 'https://www.linkedin.com' + href
+            job_urls.add(full_url)
+    
+    # 5. MICRODATA/JSON-LD
+    json_ld = soup.find_all('script', type='application/ld+json')
+    for script in json_ld:
+        try:
+            data = json.loads(script.string)
+            if isinstance(data, list):
+                for item in data:
+                    if item.get('@type') == 'JobPosting' and item.get('url'):
+                        job_urls.add(item['url'])
+            elif data.get('@type') == 'JobPosting':
+                if data.get('url'):
+                    job_urls.add(data['url'])
+        except:
+            continue
+    
+    logger.debug(f"Extracted {len(job_urls)} total job URLs")
+    return list(job_urls)
+
+def extract_jobs_from_json(data, job_urls):
+    """Extract job URLs from nested JSON structure"""
+    if isinstance(data, dict):
+        # Look for job URL patterns
+        for key, value in data.items():
+            if isinstance(value, str) and '/jobs/view/' in value:
+                job_urls.add(value)
+            elif key in ['jobId', 'job_id', 'id'] and isinstance(value, (str, int)):
+                if isinstance(value, str) and value.isdigit():
+                    job_urls.add(f'https://www.linkedin.com/jobs/view/{value}')
+            elif isinstance(value, (dict, list)):
+                extract_jobs_from_json(value, job_urls)
+
+def validate_job_url(url):
+    """Validate if URL is a proper LinkedIn job URL"""
+    if not url or 'linkedin.com' not in url:
+        return False
+    
+    job_id_match = re.search(r'/jobs/view/(\d+)', url)
+    if not job_id_match:
+        return False
+    
+    job_id = job_id_match.group(1)
+    return len(job_id) > 5 and job_id.isdigit()
+
+def build_search_url(page=0):
+    """Enhanced search URL with better parameters"""
+    base_url = 'https://www.linkedin.com/jobs/search'
+    
+    # Add default keyword if none provided
+    default_keyword = KEYWORD_ENCODED or 'software developer'  # Use specific keyword
+    
+    params = {
+        'keywords': default_keyword,
+        'location': COUNTRY_ENCODED,
+        'start': str(page * 25),
+        # Additional filters to get more results
+        'f_TPR': 'r86400',  # Past 24 hours for fresh jobs
+        'f_E': '1,2,3,4',   # All employment types
+        'f_JT': 'F',        # Full-time preferred
+        'f_WT': '1'         # 1+ week old jobs
+    }
+    
+    # Build query string
+    query_params = []
+    for key, value in params.items():
+        if value:  # Skip empty values
+            query_params.append(f"{key}={urllib.parse.quote(str(value))}")
+    
+    url = f"{base_url}?{'&'.join(query_params)}"
+    logger.debug(f"Built URL: {url}")
+    return url
 
 # Update main() function to show cookie status
 def main():
