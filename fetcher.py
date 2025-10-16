@@ -820,7 +820,7 @@ LINKEDIN_COOKIES = os.getenv('LINKEDIN_COOKIES', '')  # LinkedIn cookies JSON st
 
 # Update the headers section to include cookies if available
 def create_linkedin_session():
-    """Create session with LinkedIn cookies if available"""
+    """Create session with LinkedIn cookies and ensure proper authentication"""
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     session.mount('https://', HTTPAdapter(max_retries=retries))
@@ -828,10 +828,25 @@ def create_linkedin_session():
     if LINKEDIN_COOKIES:
         try:
             cookies = json.loads(LINKEDIN_COOKIES)
-            for name, value in cookies.items():
-                session.cookies.set(name, value, domain='.linkedin.com')
+            for cookie in cookies:
+                # Handle both dict format and list of dicts
+                if isinstance(cookie, dict):
+                    name = cookie.get('name')
+                    value = cookie.get('value')
+                    domain = cookie.get('domain', '.linkedin.com')
+                else:
+                    name = cookie.get('name') if hasattr(cookie, 'get') else str(cookie)
+                    value = cookie.get('value') if hasattr(cookie, 'get') else str(cookie)
+                    domain = '.linkedin.com'
+                
+                if name and value:
+                    session.cookies.set(name, value, domain=domain)
+            
             logger.info("✅ LinkedIn cookies loaded successfully")
-            print("✅ LinkedIn cookies: LOADED (Application URLs accessible)")
+            
+            # Verify cookies are working by testing authenticated endpoint
+            verify_cookies(session)
+            
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LinkedIn cookies JSON: {str(e)}")
             print("⚠️ LinkedIn cookies: INVALID JSON")
@@ -842,13 +857,65 @@ def create_linkedin_session():
         logger.warning("No LinkedIn cookies provided - some application URLs may require login")
         print("⚠️ LinkedIn cookies: NOT PROVIDED (Limited application URL access)")
     
-    # Update headers with cookies support
-    session.headers.update(headers)
+    # Essential LinkedIn headers
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Cache-Control': 'max-age=0'
+    })
+    
     return session
 
-# Update the crawl function to use the new session creator
+def verify_cookies(session):
+    """Verify LinkedIn cookies are valid by checking authenticated profile endpoint"""
+    try:
+        # Test with me endpoint or profile to verify authentication
+        test_url = "https://www.linkedin.com/voyager/api/identity/profiles/me"
+        response = session.get(test_url, timeout=10, allow_redirects=True)
+        
+        if response.status_code == 200:
+            logger.info("✅ LinkedIn authentication verified - cookies working")
+            print("✅ LinkedIn Login: AUTHENTICATED")
+            return True
+        elif "login" in response.url.lower() or response.status_code in [401, 403]:
+            logger.warning("⚠️ LinkedIn cookies expired or invalid - redirecting to login")
+            print("⚠️ LinkedIn Login: COOKIES EXPIRED")
+            return False
+        else:
+            logger.info("ℹ️ Cookie verification inconclusive, proceeding with session")
+            print("ℹ️ LinkedIn Login: SESSION READY")
+            return True
+            
+    except Exception as e:
+        logger.warning(f"Cookie verification failed: {str(e)}, proceeding anyway")
+        print("ℹ️ LinkedIn Login: UNVERIFIED (proceeding)")
+        return True
+
+def create_linkedin_session_with_auth():
+    """Enhanced session creation with authentication verification"""
+    session = create_linkedin_session()
+    
+    # Additional LinkedIn-specific headers for authenticated requests
+    session.headers.update({
+        'X-Li-User-Agent': 'CCID:1-USER_AGENT:1-APP_ID:7-VERSION:1.11.618-BUILD:20231201.1357',
+        'X-Restli-Protocol-Version': '2.0.0',
+        'X-Web-App-Version': '1.11.618'
+    })
+    
+    # Set referer for LinkedIn internal navigation
+    session.headers['Referer'] = 'https://www.linkedin.com/'
+    
+    return session
+
 def crawl(wp_headers, processed_ids, licensed):
-    """Main crawling function"""
+    """Main crawling function with enhanced LinkedIn authentication"""
     logger.info(f"Starting crawl for country={COUNTRY}, keyword={KEYWORD or 'ALL JOBS'}, licensed={licensed}")
     logger.info(f"LinkedIn cookies available: {'Yes' if LINKEDIN_COOKIES else 'No'}")
     
@@ -857,10 +924,35 @@ def crawl(wp_headers, processed_ids, licensed):
     total_jobs = 0
     start_page = load_last_page()
     
-    session = create_linkedin_session()  # Use cookie-enabled session
+    # Create authenticated session
+    session = create_linkedin_session_with_auth()
+    
+    # Initial test of search functionality
+    test_search_url = build_search_url(start_page)
+    logger.info(f"Testing LinkedIn access with: {test_search_url}")
+    
+    try:
+        test_response = session.get(test_search_url, timeout=15)
+        test_response.raise_for_status()
+        
+        if "login" in test_response.url.lower() or "challenge" in test_response.url.lower():
+            logger.error("❌ LinkedIn login required - cookies not working")
+            print("❌ LinkedIn Login: FAILED - Check cookies")
+            return
+        
+        logger.info("✅ LinkedIn search access confirmed")
+        print("✅ LinkedIn Access: CONFIRMED")
+        
+    except Exception as e:
+        logger.error(f"❌ Initial LinkedIn test failed: {str(e)}")
+        print("❌ LinkedIn Access: FAILED")
+        return
     
     i = start_page
-    while True:
+    consecutive_empty_pages = 0
+    max_empty_pages = 3  # Stop after 3 consecutive empty pages
+    
+    while consecutive_empty_pages < max_empty_pages:
         url = build_search_url(i)
         logger.info(f"Fetching page {i}: {url}")
         
@@ -870,10 +962,11 @@ def crawl(wp_headers, processed_ids, licensed):
             response = session.get(url, timeout=20)
             response.raise_for_status()
             
+            # Check for login redirect or CAPTCHA
             if "login" in response.url.lower() or "challenge" in response.url.lower():
-                logger.error("Login or CAPTCHA detected, stopping crawl")
+                logger.error("Login or CAPTCHA detected during crawl, stopping")
                 if LINKEDIN_COOKIES:
-                    logger.warning("Cookies may be expired or invalid")
+                    logger.warning("Cookies may have expired during session")
                 break
             
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -883,18 +976,26 @@ def crawl(wp_headers, processed_ids, licensed):
             logger.info(f"Found {len(urls)} job URLs on page {i}")
             
             if not urls:
-                logger.warning(f"No jobs found on page {i}, possibly end of results")
-                break
+                logger.warning(f"No jobs found on page {i}")
+                consecutive_empty_pages += 1
+                save_last_page(i + 1)
+                i += 1
+                continue
+            
+            consecutive_empty_pages = 0  # Reset counter when jobs found
             
             for index, job_url in enumerate(urls):
                 logger.info(f"Processing job {index + 1}/{len(urls)}: {job_url}")
+                
+                # Make full URL if relative
+                if job_url.startswith('/'):
+                    job_url = 'https://www.linkedin.com' + job_url
                 
                 job_data = scrape_job_details(job_url, licensed, session)
                 if not job_data:
                     failure_count += 1
                     continue
                 
-                # Rest of the crawl logic remains the same...
                 job_dict = dict(zip([
                     "job_title", "company_logo", "company_name", "company_url", "location",
                     "environment", "job_type", "level", "job_functions", "industries",
@@ -945,6 +1046,11 @@ def crawl(wp_headers, processed_ids, licensed):
             save_last_page(i + 1)
             i += 1
             
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error on page {i}: {str(e)}")
+            consecutive_empty_pages += 1
+            time.sleep(10)  # Wait longer on network errors
+            continue
         except Exception as e:
             logger.error(f"Error processing page {i}: {str(e)}")
             failure_count += 1
