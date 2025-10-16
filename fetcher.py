@@ -979,7 +979,7 @@ def create_linkedin_session_with_auth():
     return session
 
 def crawl(wp_headers, processed_ids, licensed):
-    """Main crawling function with robust LinkedIn job extraction"""
+    """Main crawling function with robust LinkedIn job extraction and modern selectors"""
     logger.info(f"🚀 Starting crawl: Country={COUNTRY}, Keyword={KEYWORD or 'ALL JOBS'}, Licensed={licensed}")
     logger.info(f"🍪 LinkedIn cookies: {'Yes' if LINKEDIN_COOKIES else 'No'}")
     
@@ -1016,6 +1016,11 @@ def crawl(wp_headers, processed_ids, licensed):
             f.write(test_response.text)
         logger.info(f"💾 Debug HTML saved: {debug_file}")
         
+        # Check if page contains job content
+        if "jobs-search" not in test_response.text and "job-card" not in test_response.text.lower():
+            logger.warning("⚠️ Page might be JavaScript rendered - consider using Selenium")
+            print("⚠️ Warning: Page may require JavaScript rendering")
+        
         print("✅ LinkedIn access confirmed")
         
     except requests.exceptions.RequestException as e:
@@ -1047,25 +1052,38 @@ def crawl(wp_headers, processed_ids, licensed):
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Multiple selector strategies for job cards
+            # Save page HTML for debugging
+            debug_page_file = f"uploads/debug_page_{page_num}.html"
+            with open(debug_page_file, "w", encoding="utf-8") as f:
+                f.write(response.text)
+            
+            # Modern LinkedIn job selectors (2025)
             job_selectors = [
-                # Try most likely current selectors first
+                # Primary modern selectors
+                'section[data-test-id="job-search-results-list"] li',
+                '.jobs-search__results-list li',
+                '.jobs-search-results__list li',
                 'li[data-occludable-job-id]',
                 '[data-occludable-job-id]',
-                '.jobs-search-results__list li',
+                '.job-card-list__card',
+                '.occludable-job-card',
+                
+                # Alternative patterns
+                '[data-test-id*="job-"]',
+                'li[role="listitem"]',
                 '.job-search-card',
                 '.reusable-search__result-container',
-                # Fallback patterns
+                '.job-card-container',
+                
+                # Legacy selectors
                 '.jobs-search__results-list li',
                 'ul.jobs-search-results__list li',
-                # Broad search for job links
-                'a[href*="/jobs/view/"]',
-                'a[href*="/job/"]'
+                'div.job-search-results li'
             ]
             
-            job_urls = set()  # Use set to avoid duplicates
+            job_urls = set()
             
-            # Try each selector strategy
+            # Try CSS selectors first
             for selector in job_selectors:
                 elements = soup.select(selector)
                 logger.debug(f"Selector '{selector}': {len(elements)} elements")
@@ -1073,69 +1091,125 @@ def crawl(wp_headers, processed_ids, licensed):
                 if elements:
                     logger.info(f"✓ Active selector: {selector} ({len(elements)} elements)")
                     
-                    for elem in elements[:25]:  # Limit processing
-                        # Extract job URLs from element
-                        links = elem.select('a[href*="/jobs/view/"], a[href*="/job/"], a[data-job-id]')
+                    for elem in elements[:30]:  # Limit processing
+                        # Extract job links from element
+                        job_links = elem.select(
+                            'a[href*="/jobs/view/"], '
+                            'a[href*="/job/"], '
+                            'a[data-job-id], '
+                            'a[href*="jobs/view"]'
+                        )
                         
-                        if not links:
-                            links = elem.select('a[href*="jobs"], a[href*="/job"]')
+                        if not job_links:
+                            # Broader search within element
+                            job_links = elem.select('a[href*="jobs"], a[href*="/view/"]')
                         
-                        for link in links:
+                        for link in job_links:
                             href = link.get('href', '')
                             if href and any(pattern in href for pattern in ['/jobs/view/', '/job/']):
                                 # Make absolute URL
-                                if href.startswith('/'):
-                                    full_url = 'https://www.linkedin.com' + href
-                                else:
-                                    full_url = href
-                                
+                                full_url = href if href.startswith('http') else 'https://www.linkedin.com' + href
+                                # Clean URL parameters but preserve jobId
+                                full_url = re.sub(r'(&|&)trk=.*', '', full_url)
                                 job_urls.add(full_url)
+                                logger.debug(f"Found job URL: {full_url}")
             
-            # Fallback: search all links for job patterns
+            # Enhanced regex fallback if no CSS matches
             if not job_urls:
-                logger.info("🔍 No job cards found, searching all links...")
-                all_links = soup.find_all('a', href=True)
-                for link in all_links:
-                    href = link.get('href', '')
-                    if any(pattern in href for pattern in ['/jobs/view/', '/job/', 'jobId=']):
-                        if href.startswith('/'):
-                            full_url = 'https://www.linkedin.com' + href
-                        else:
-                            full_url = href
-                        if full_url not in job_urls:
+                logger.info("🔍 Enhanced regex fallback - searching entire page...")
+                
+                # Multiple regex patterns for job URLs
+                job_patterns = [
+                    r'href=[\'"](https?://www\.linkedin\.com/jobs/view/\d+[^\'"]*)[\'"]',
+                    r'href=[\'"/jobs/view/\d+[^\'"> ]*[\'"> ]',
+                    r'data-job-id=[\'"](\d+)[\'"]',
+                    r'jobId=(\d+)',
+                    r'/jobs/view/(\d+)',
+                    r'"jobUrl":"([^"]*/jobs/view/\d+[^"]*)"'
+                ]
+                
+                for pattern in job_patterns:
+                    matches = re.findall(pattern, response.text, re.IGNORECASE | re.DOTALL)
+                    for match in matches:
+                        if isinstance(match, tuple):
+                            match = match[0]
+                        
+                        # Construct valid job URL from match
+                        if '/jobs/view/' in match:
+                            full_url = match if match.startswith('http') else 'https://www.linkedin.com' + match
+                            job_urls.add(full_url)
+                        elif match.isdigit() and len(match) > 5:
+                            # Job ID found, construct URL
+                            full_url = f'https://www.linkedin.com/jobs/view/{match}'
                             job_urls.add(full_url)
                 
-                logger.info(f"🔍 Fallback found {len(job_urls)} potential job URLs")
+                logger.info(f"🔍 Regex found {len(job_urls)} potential job URLs")
             
-            job_urls_list = list(job_urls)[:10]  # Reduced limit for testing
-            logger.info(f"🎯 Processing {len(job_urls_list)} jobs on page {page_num}")
+            # Additional fallback: JSON data in script tags
+            if not job_urls:
+                logger.info("🔍 Searching JSON data in script tags...")
+                scripts = soup.find_all('script', type='application/ld+json')
+                for script in scripts:
+                    try:
+                        job_data = json.loads(script.string)
+                        if isinstance(job_data, list):
+                            for item in job_data:
+                                if item.get('@type') == 'JobPosting' and item.get('url'):
+                                    job_urls.add(item['url'])
+                        elif isinstance(job_data, dict) and job_data.get('@type') == 'JobPosting':
+                            if job_data.get('url'):
+                                job_urls.add(job_data['url'])
+                    except:
+                        continue
+                
+                # Search for inline JSON with job data
+                inline_json_matches = re.findall(r'"jobId":\s*(\d+)', response.text)
+                for job_id in inline_json_matches:
+                    if len(job_id) > 5:
+                        job_urls.add(f'https://www.linkedin.com/jobs/view/{job_id}')
+            
+            # Validate and clean job URLs
+            job_urls_list = []
+            for url in job_urls:
+                if '/jobs/view/' in url and 'linkedin.com' in url:
+                    # Extract and validate job ID
+                    job_id_match = re.search(r'/jobs/view/(\d+)', url)
+                    if job_id_match and len(job_id_match.group(1)) > 5:
+                        # Clean URL
+                        clean_url = re.sub(r'(&|&)trk=.*', '', url)
+                        job_urls_list.append(clean_url)
+            
+            # Remove duplicates and limit
+            job_urls_list = list(dict.fromkeys(job_urls_list))[:15]  # Dedupe and limit
+            
+            logger.info(f"🎯 Validated {len(job_urls_list)} unique job URLs for page {page_num}")
             
             if not job_urls_list:
-                logger.warning(f"📭 No jobs found on page {page_num}")
-                # Save current page HTML for debugging
-                debug_page_file = f"uploads/debug_page_{page_num}.html"
-                with open(debug_page_file, "w", encoding="utf-8") as f:
-                    f.write(response.text)
-                logger.info(f"💾 Empty page debug saved: {debug_page_file}")
+                logger.warning(f"📭 No valid jobs found on page {page_num}")
+                logger.info(f"💾 Debug HTML saved: {debug_page_file}")
                 empty_pages += 1
                 save_last_page(page_num + 1)
                 page_num += 1
                 continue
             
-            empty_pages = 0  # Reset when jobs found
+            empty_pages = 0  # Reset counter when jobs found
             
             # Process each job
             for idx, job_url in enumerate(job_urls_list):
-                logger.info(f"🔄 Job {idx + 1}/{len(job_urls_list)}: {job_url}")
+                logger.info(f"🔄 Processing job {idx + 1}/{len(job_urls_list)}: {job_url}")
                 
                 try:
+                    # Additional delay between jobs
+                    if idx > 0:
+                        time.sleep(random.uniform(4, 8))
+                    
                     job_data = scrape_job_details(job_url, licensed, session)
                     if not job_data:
                         failure_count += 1
                         logger.warning(f"Failed to scrape job details: {job_url}")
                         continue
                     
-                    # Map job data to dictionary
+                    # Map job data to dictionary with proper field alignment
                     field_names = [
                         "job_title", "company_logo", "company_name", "company_url", "location",
                         "environment", "job_type", "level", "job_functions", "industries",
@@ -1146,35 +1220,34 @@ def crawl(wp_headers, processed_ids, licensed):
                         "final_application_url", "resolved_application_url"
                     ]
                     
-                    # Fix: job_data should have 26 elements, but field_names has 26 - add job_url
-                    if len(job_data) == 26:
-                        job_data.append(job_url)  # Add job_url if missing
-                    elif len(job_data) < len(field_names):
-                        # Pad with empty strings
-                        job_data.extend([''] * (len(field_names) - len(job_data)))
+                    # Ensure job_data has correct length
+                    while len(job_data) < len(field_names):
+                        job_data.append("")
                     
                     job_dict = dict(zip(field_names, job_data[:len(field_names)]))
                     job_dict["job_salary"] = ""
+                    job_dict["job_url"] = job_url  # Ensure URL is preserved
                     
                     # Validate essential fields
                     job_title = job_dict.get("job_title", "").strip()
                     company_name = job_dict.get("company_name", "").strip()
                     
-                    if not job_title or not company_name:
+                    if not job_title or not company_name or len(job_title) < 3:
                         logger.warning(f"⏭️ Skipping incomplete job: '{job_title}' - '{company_name}'")
                         failure_count += 1
                         continue
                     
-                    # Check for duplicates
-                    job_id = generate_id(f"{job_title}_{company_name}")
+                    # Check for duplicates using normalized title + company
+                    job_id = generate_id(f"{normalize_for_deduplication(job_title)}_{normalize_for_deduplication(company_name)}")
                     if job_id in processed_ids:
-                        logger.info(f"⏭️ Duplicate job skipped: {job_id}")
+                        logger.info(f"⏭️ Duplicate job skipped: {job_title[:50]}...")
                         total_jobs += 1
                         continue
                     
                     total_jobs += 1
+                    logger.info(f"📝 Processing new job: {job_title[:60]}... at {company_name}")
                     
-                    # Save to WordPress
+                    # Save company first
                     company_id, company_msg = save_company_to_wordpress(
                         idx, job_dict, wp_headers, licensed
                     )
@@ -1183,6 +1256,7 @@ def crawl(wp_headers, processed_ids, licensed):
                         failure_count += 1
                         continue
                     
+                    # Save job
                     job_post_id, job_msg = save_article_to_wordpress(
                         idx, job_dict, company_id, wp_headers, licensed
                     )
@@ -1192,47 +1266,58 @@ def crawl(wp_headers, processed_ids, licensed):
                         success_count += 1
                         emoji = "🔓" if licensed else "🔒"
                         print(f"{emoji} ✅ {job_title[:60]}... at {company_name}")
-                        logger.info(f"Saved job: {job_title} at {company_name}")
+                        logger.info(f"✅ Saved job: {job_title} at {company_name} (ID: {job_post_id})")
                     else:
                         failure_count += 1
                         logger.error(f"💾 Job save failed: {job_msg}")
                         print(f"❌ Failed: {job_title[:50]}... - {job_msg}")
                     
-                    # Delay between jobs
-                    time.sleep(random.uniform(3, 7))
-                
                 except Exception as e:
-                    logger.error(f"❌ Job processing error: {str(e)}", exc_info=True)
+                    logger.error(f"❌ Job processing error for {job_url}: {str(e)}", exc_info=True)
                     failure_count += 1
                     continue
             
-            # Save progress
+            # Save progress after successful page
             save_last_page(page_num + 1)
             page_num += 1
+            
+            # Longer delay after processing jobs
+            time.sleep(random.uniform(8, 15))
             
         except requests.exceptions.RequestException as e:
             logger.error(f"🌐 Network error on page {page_num}: {str(e)}")
             empty_pages += 1
-            time.sleep(15)
+            time.sleep(random.uniform(15, 30))  # Longer backoff
             continue
         except Exception as e:
-            logger.error(f"💥 Unexpected error page {page_num}: {str(e)}", exc_info=True)
+            logger.error(f"💥 Unexpected error on page {page_num}: {str(e)}", exc_info=True)
             empty_pages += 1
             continue
     
-    # Final cleanup
+    # Final cleanup and reporting
     save_processed_ids(processed_ids)
     
     logger.info(f"🏁 Crawl completed: Total={total_jobs}, Success={success_count}, Failed={failure_count}")
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print(f"📊 CRAWL SUMMARY")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
+    print(f"📍 Country: {COUNTRY}")
+    print(f"🔍 Keyword: {KEYWORD or 'ALL JOBS'}")
+    print(f"📄 Pages processed: {page_num}")
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully saved: {success_count}")
     print(f"Failed: {failure_count}")
     print(f"License: {'🔓 FULL ACCESS' if licensed else '🔒 BASIC ACCESS'}")
     print(f"Cookies: {'✅ ENABLED' if LINKEDIN_COOKIES else '⚠️ DISABLED'}")
-    print(f"{'='*50}")
+    print(f"Debug files: uploads/debug_page_*.html")
+    print(f"{'='*60}")
+    
+    if success_count == 0:
+        print("❌ No jobs found! Check debug HTML files and consider:")
+        print("   1. Using Selenium for JavaScript rendering")
+        print("   2. Adding specific keywords to search")
+        print("   3. Verifying cookies are still valid")
+        print("   4. Checking LinkedIn's current HTML structure")
 
 # Update main() function to show cookie status
 def main():
