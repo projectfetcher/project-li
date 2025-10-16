@@ -901,7 +901,8 @@ def verify_cookies(session):
 
 def create_linkedin_session_with_auth():
     """Create authenticated LinkedIn session with manual cookie handling"""
-    session = requests.Session()  # Use requests.Session() instead of Session()
+    # FIXED: Use requests.Session() directly - no import needed
+    session = requests.Session()
     
     # Configure retries for robustness
     retry_strategy = Retry(
@@ -935,7 +936,8 @@ def create_linkedin_session_with_auth():
                             loaded_cookies = True
             
             logger.info(f"✅ Successfully loaded {loaded_count} LinkedIn cookies")
-            print(f"🍪 Loaded {loaded_count} cookies (li_at: {'✅' if loaded_cookies else '❌'})")
+            li_at_status = "✅" if loaded_cookies else "❌"
+            print(f"🍪 Loaded {loaded_count} cookies (li_at: {li_at_status})")
             
         except json.JSONDecodeError as e:
             logger.error(f"❌ Invalid JSON in LinkedIn cookies: {str(e)}")
