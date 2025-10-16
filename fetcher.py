@@ -898,6 +898,59 @@ def verify_cookies(session):
         print("ℹ️ LinkedIn Login: UNVERIFIED (proceeding)")
         return True
 
+def create_linkedin_session_with_auth():
+    """Enhanced session with better LinkedIn compatibility - Fixed cookie handling"""
+    session = requests.Session()
+    retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
+    if LINKEDIN_COOKIES:
+        try:
+            cookies = json.loads(LINKEDIN_COOKIES)
+            cookie_count = 0
+            
+            for cookie in cookies:
+                if isinstance(cookie, dict):
+                    name = cookie.get('name')
+                    value = cookie.get('value')
+                    domain = cookie.get('domain', '.linkedin.com')
+                    path = cookie.get('path', '/')
+                    
+                    if name and value:
+                        # Use basic cookie setting without httponly/secure params
+                        session.cookies.set(
+                            name, 
+                            value, 
+                            domain=domain,
+                            path=path
+                        )
+                        cookie_count += 1
+            
+            logger.info(f"✅ Loaded {cookie_count} LinkedIn cookies successfully")
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error in cookies: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error loading cookies: {str(e)}")
+    
+    # Updated headers to mimic real browser
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0'
+    })
+    
+    return session
+
 def crawl(wp_headers, processed_ids, licensed):
     """Main crawling function with updated LinkedIn selectors"""
     logger.info(f"Starting crawl for country={COUNTRY}, keyword={KEYWORD or 'ALL JOBS'}, licensed={licensed}")
@@ -910,7 +963,7 @@ def crawl(wp_headers, processed_ids, licensed):
     
     session = create_linkedin_session_with_auth()
     
-    # Initial test of search functionality
+    # Initial test
     test_search_url = build_search_url(start_page)
     logger.info(f"Testing LinkedIn access with: {test_search_url}")
     
@@ -919,11 +972,11 @@ def crawl(wp_headers, processed_ids, licensed):
         test_response.raise_for_status()
         
         if "login" in test_response.url.lower() or "challenge" in test_response.url.lower():
-            logger.error("❌ LinkedIn login required - cookies not working")
-            print("❌ LinkedIn Login: FAILED - Check cookies")
+            logger.error("❌ LinkedIn login required")
+            print("❌ LinkedIn Login: FAILED")
             return
         
-        # Debug: Save HTML for inspection
+        # Save debug HTML
         with open(f"debug_page_{start_page}.html", "w", encoding="utf-8") as f:
             f.write(test_response.text)
         logger.info(f"✅ Debug HTML saved to debug_page_{start_page}.html")
@@ -932,91 +985,82 @@ def crawl(wp_headers, processed_ids, licensed):
         print("✅ LinkedIn Access: CONFIRMED")
         
     except Exception as e:
-        logger.error(f"❌ Initial LinkedIn test failed: {str(e)}")
-        print("❌ LinkedIn Access: FAILED")
+        logger.error(f"❌ Initial test failed: {str(e)}")
         return
     
     i = start_page
     consecutive_empty_pages = 0
-    max_empty_pages = 5  # Increased tolerance
+    max_empty_pages = 5
     
     while consecutive_empty_pages < max_empty_pages:
         url = build_search_url(i)
         logger.info(f"Fetching page {i}: {url}")
         
-        time.sleep(random.uniform(5, 10))  # Longer delays to avoid detection
+        time.sleep(random.uniform(5, 10))
         
         try:
             response = session.get(url, timeout=30)
             response.raise_for_status()
             
             if "login" in response.url.lower() or "challenge" in response.url.lower():
-                logger.error("Login or CAPTCHA detected during crawl, stopping")
+                logger.error("Login detected during crawl")
                 break
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Multiple selector strategies for LinkedIn job cards
+            # Updated selectors for current LinkedIn structure
             job_selectors = [
-                # New LinkedIn structure (most common)
-                'div.jobs-search-results__list li',
+                # Most common current selectors
+                '.jobs-search-results__list li',
+                '[data-occludable-job-id]',
+                '.job-search-card',
+                '.reusable-search__result-container',
+                'li[data-occludable-job-id]',
+                '.job-card-list__main',
+                # Fallback selectors
+                '.jobs-search__results-list li',
                 'ul.jobs-search-results__list li',
-                'div[role="main"] [data-occludable-job-id]',
-                'div.job-search-card',
-                'li.reusable-search__result-container',
-                'div.job-card-container',
-                'div.jobs-search__results-list li',
-                # Legacy selectors
-                'ul.jobs-search__results-list li',
-                'div.jobs-search-results li'
+                'div.job-search-card-container'
             ]
             
             job_urls = []
-            selected_jobs = []
             
             for selector in job_selectors:
-                job_elements = soup.select(selector)
-                logger.debug(f"Selector '{selector}' found {len(job_elements)} elements")
+                elements = soup.select(selector)
+                logger.debug(f"Selector '{selector}': {len(elements)} elements")
                 
-                if job_elements:
-                    logger.info(f"Using selector: {selector} ({len(job_elements)} jobs found)")
-                    selected_jobs = job_elements
-                    break
+                if elements:
+                    logger.info(f"✓ Using selector: {selector} ({len(elements)} found)")
+                    
+                    for elem in elements[:25]:  # Limit per page
+                        # Look for job links
+                        links = elem.select('a[href*="/jobs/view/"], a[href*="/job/"], a[data-job-id]')
+                        
+                        if not links:
+                            links = elem.select('a[href*="jobs"], a[href*="/job"]')
+                        
+                        for link in links:
+                            href = link.get('href', '')
+                            if href and ('/jobs/view/' in href or '/job/' in href):
+                                if href.startswith('/'):
+                                    full_url = 'https://www.linkedin.com' + href
+                                else:
+                                    full_url = href
+                                
+                                if full_url not in job_urls:
+                                    job_urls.append(full_url)
+                                    break
             
-            if not selected_jobs:
-                logger.warning("No job elements found with any selector")
-                # Debug: Log page structure
-                all_links = soup.find_all('a', href=True)
-                job_like_links = [link['href'] for link in all_links if 'jobs/view' in link['href'] or 'job' in link.get('href', '').lower()]
-                logger.info(f"Found {len(job_like_links)} job-like links in page")
-                consecutive_empty_pages += 1
-                save_last_page(i + 1)
-                i += 1
-                continue
+            logger.info(f"Extracted {len(job_urls)} job URLs on page {i}")
             
-            # Extract job URLs from selected elements
-            for job_element in selected_jobs[:25]:  # Limit per page to avoid rate limits
-                # Look for job links within the job card
-                job_links = job_element.select('a[href*="/jobs/view"], a[href*="/job/"], a[data-job-id]')
-                
-                if not job_links:
-                    # Fallback: look for any link with job-related attributes
-                    job_links = job_element.select('a[href*="jobs"]')
-                
-                for link in job_links:
-                    href = link.get('href', '')
-                    if href and ('jobs/view' in href or '/job/' in href) and href not in job_urls:
-                        if href.startswith('/'):
-                            full_url = 'https://www.linkedin.com' + href
-                        else:
-                            full_url = href
-                        job_urls.append(full_url)
-                        break  # Only one link per job card
-            
-            logger.info(f"Found {len(job_urls)} job URLs on page {i}")
-            
+            # Debug: if no jobs found, look for any job-related patterns
             if not job_urls:
-                logger.warning(f"No valid job URLs extracted from page {i}")
+                all_links = soup.find_all('a', href=True)
+                potential_jobs = [link['href'] for link in all_links 
+                                if any(x in link['href'] for x in ['/jobs/view/', '/job/', 'jobId='])]
+                logger.info(f"Potential job links found: {len(potential_jobs)}")
+                logger.info(f"Sample links: {potential_jobs[:3]}")
+                
                 consecutive_empty_pages += 1
                 save_last_page(i + 1)
                 i += 1
@@ -1047,14 +1091,14 @@ def crawl(wp_headers, processed_ids, licensed):
                 company_name = job_dict.get("company_name", "")
                 
                 if not job_title or not company_name:
-                    logger.warning(f"Skipping job with missing title or company: {job_title} - {company_name}")
+                    logger.warning(f"Skipping incomplete job: {job_title} - {company_name}")
                     failure_count += 1
                     continue
                 
                 job_id = generate_id(f"{job_title}_{company_name}")
                 
                 if job_id in processed_ids:
-                    logger.info(f"Skipping already processed job: {job_id}")
+                    logger.info(f"Skipping duplicate: {job_id}")
                     total_jobs += 1
                     continue
                 
@@ -1062,7 +1106,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 
                 company_id, company_msg = save_company_to_wordpress(index, job_dict, wp_headers, licensed)
                 if not company_id:
-                    logger.error(f"Failed to save company: {company_msg}")
+                    logger.error(f"Company save failed: {company_msg}")
                     failure_count += 1
                     continue
                 
@@ -1075,82 +1119,32 @@ def crawl(wp_headers, processed_ids, licensed):
                     print(f"{emoji} Saved: {job_title} at {company_name}")
                 else:
                     failure_count += 1
-                    print(f"✗ Failed: {job_title} at {company_name} - {job_msg}")
+                    print(f"✗ Failed: {job_title} - {job_msg}")
                 
-                time.sleep(random.uniform(3, 8))  # Longer delays between jobs
+                time.sleep(random.uniform(3, 8))
             
             save_last_page(i + 1)
             i += 1
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Network error on page {i}: {str(e)}")
+            logger.error(f"Network error page {i}: {str(e)}")
             consecutive_empty_pages += 1
             time.sleep(15)
             continue
         except Exception as e:
-            logger.error(f"Error processing page {i}: {str(e)}")
+            logger.error(f"Error page {i}: {str(e)}")
             consecutive_empty_pages += 1
             continue
     
     save_processed_ids(processed_ids)
     
-    logger.info(f"Crawl completed: Total={total_jobs}, Success={success_count}, Failed={failure_count}")
+    logger.info(f"Crawl done: Total={total_jobs}, Success={success_count}, Failed={failure_count}")
     print(f"\n=== SUMMARY ===")
-    print(f"Total jobs processed: {total_jobs}")
-    print(f"Successfully saved: {success_count}")
+    print(f"Total jobs: {total_jobs}")
+    print(f"Success: {success_count}")
     print(f"Failed: {failure_count}")
-    print(f"License status: {'FULL ACCESS' if licensed else 'BASIC ACCESS ONLY'}")
-    print(f"LinkedIn cookies: {'ENABLED' if LINKEDIN_COOKIES else 'DISABLED'}")
-
-def create_linkedin_session_with_auth():
-    """Enhanced session with better LinkedIn compatibility"""
-    session = requests.Session()
-    retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
-    if LINKEDIN_COOKIES:
-        try:
-            cookies = json.loads(LINKEDIN_COOKIES)
-            for cookie in cookies:
-                if isinstance(cookie, dict):
-                    name = cookie.get('name')
-                    value = cookie.get('value')
-                    domain = cookie.get('domain', '.linkedin.com')
-                    path = cookie.get('path', '/')
-                    secure = cookie.get('secure', True)
-                    http_only = cookie.get('httpOnly', False)
-                else:
-                    continue
-                
-                if name and value:
-                    session.cookies.set(
-                        name, value, 
-                        domain=domain,
-                        path=path,
-                        secure=secure,
-                        httponly=http_only
-                    )
-            logger.info("✅ LinkedIn cookies loaded with full attributes")
-        except Exception as e:
-            logger.error(f"Error loading cookies: {str(e)}")
-    
-    # Updated headers to mimic real browser more closely
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0'
-    })
-    
-    return session
+    print(f"License: {'FULL' if licensed else 'BASIC'}")
+    print(f"Cookies: {'ENABLED' if LINKEDIN_COOKIES else 'DISABLED'}")
 
 # Update main() function to show cookie status
 def main():
