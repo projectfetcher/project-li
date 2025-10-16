@@ -369,10 +369,34 @@ def scrape_job_details(job_url, licensed, session):
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Job title
-        job_title = soup.select_one("h1.top-card-layout__title")
-        job_title = job_title.get_text().strip() if job_title else ''
-        logger.info(f"scrape_job_details: Scraped Job Title: {job_title}")
+        # JOB TITLE - Using the exact selector you found
+        job_title_selectors = [
+            # Your provided selector (most specific)
+            'body > div.application-outlet > div.authentication-outlet > div.scaffold-layout.scaffold-layout--breakpoint-md.scaffold-layout--main-aside.scaffold-layout--reflow.job-view-layout.jobs-details > div > div > main > div.job-view-layout.jobs-details > div:nth-child(1) > div > div:nth-child(1) > div > div > div > div.display-flex.justify-space-between.flex-wrap.mt2 > div > h1',
+            
+            # More flexible selectors
+            'h1.top-card-layout__title',
+            'h1[data-test-id="job-title"]',
+            '.topcard__title',
+            'h1.job-details-jobs-unified-top-card__job-title',
+            '[data-test-id="job-title"] h1',
+            '.jobs-unified-top-card__job-title h1',
+            'main h1'
+        ]
+        
+        job_title = ''
+        for selector in job_title_selectors:
+            title_elem = soup.select_one(selector)
+            if title_elem:
+                job_title = title_elem.get_text().strip()
+                logger.debug(f"Found job title with selector '{selector}': {job_title}")
+                break
+        
+        if not job_title:
+            logger.warning("No job title found")
+            return None
+        
+        logger.info(f"✅ Job Title: {job_title}")
         
         # Company logo (licensed only)
         company_logo = ''
