@@ -15,7 +15,6 @@ import os
 import sys
 import traceback
 import urllib.parse
-from requests_html import HTMLSession
 
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
@@ -31,14 +30,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get environment variables - FIXED: Use LICENSE_KEY instead of FETCHER_TOKEN
+# Get environment variables
 logger.debug("Loading environment variables")
 WP_SITE_URL = os.getenv('WP_SITE_URL')
 WP_USERNAME = os.getenv('WP_USERNAME')
 WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')  # Optional keyword
-LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # FIXED: License key for full data access
+LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # License key for full data access
+LINKEDIN_COOKIES = os.getenv('LINKEDIN_COOKIES', '')  # LinkedIn cookies JSON string
 
 # URL encode country and keyword for LinkedIn search
 COUNTRY_ENCODED = urllib.parse.quote(COUNTRY or 'Worldwide')
@@ -63,10 +63,21 @@ LAST_PAGE_FILE = os.path.join("uploads", "last_processed_page.txt")
 
 # HTTP headers for scraping
 headers = {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'DNT': '1',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0'
 }
 
-# FIXED: Valid license key for full data scraping
+# License constants
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
 
@@ -100,7 +111,6 @@ def validate_license_key(license_key):
         logger.warning("No LICENSE_KEY provided")
         return False
     
-    # Exact match validation
     if license_key.strip() == VALID_LICENSE_KEY:
         logger.info(f"✅ License key validated successfully: {VALID_LICENSE_KEY[:8]}...")
         return True
@@ -136,7 +146,6 @@ def validate_environment():
     if not COUNTRY:
         missing.append("COUNTRY")
     
-    # LICENSE_KEY is optional
     if missing:
         logger.error(f"Missing required environment variables: {', '.join(missing)}")
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
@@ -150,24 +159,21 @@ def build_search_url(page=0):
     """Enhanced search URL with better parameters"""
     base_url = 'https://www.linkedin.com/jobs/search'
     
-    # Add default keyword if none provided
-    default_keyword = KEYWORD_ENCODED or 'software developer'  # Use specific keyword
+    default_keyword = KEYWORD_ENCODED or 'software developer'
     
     params = {
         'keywords': default_keyword,
         'location': COUNTRY_ENCODED,
         'start': str(page * 25),
-        # Additional filters to get more results
-        'f_TPR': 'r86400',  # Past 24 hours for fresh jobs
-        'f_E': '1,2,3,4',   # All employment types
-        'f_JT': 'F',        # Full-time preferred
-        'f_WT': '1'         # 1+ week old jobs
+        'f_TPR': 'r86400',
+        'f_E': '1,2,3,4',
+        'f_JT': 'F',
+        'f_WT': '1'
     }
     
-    # Build query string
     query_params = []
     for key, value in params.items():
-        if value:  # Skip empty values
+        if value:
             query_params.append(f"{key}={urllib.parse.quote(str(value))}")
     
     url = f"{base_url}?{'&'.join(query_params)}"
@@ -287,7 +293,6 @@ def save_article_to_wordpress(index, job_data, company_id, wp_headers, licensed)
     company_name = job_data.get("company_name", "")
     job_id = generate_id(f"{job_title}_{company_name}")
     
-    # Determine application method
     application = ''
     desc_app_info = job_data.get("description_application_info", "")
     if '@' in desc_app_info:
@@ -378,35 +383,57 @@ def scrape_job_details(job_url, licensed, session):
         clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         logger.debug(f"Cleaned URL: {clean_url}")
         
-        html_session = HTMLSession()
-        response = html_session.get(clean_url, headers=headers)
-        response.html.render(timeout=20, sleep=3)  # Render JavaScript
-        soup = BeautifulSoup(response.html.html, 'html.parser')
+        # Make request with retries
+        for attempt in range(3):
+            try:
+                response = session.get(clean_url, headers=headers, timeout=15)
+                response.raise_for_status()
+                break
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Attempt {attempt + 1} failed for {clean_url}: {str(e)}")
+                if attempt == 2:
+                    logger.error(f"Failed to fetch {clean_url} after 3 attempts")
+                    return None
+                time.sleep(5)
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
         
         # Save debug HTML
         job_id = re.search(r'/jobs/view/(\d+)', clean_url)
         if job_id:
             debug_file = f"uploads/debug_job_{job_id.group(1)}.html"
             with open(debug_file, "w", encoding="utf-8") as f:
-                f.write(response.html.html)
+                f.write(response.text)
             logger.info(f"💾 Debug job HTML saved: {debug_file}")
         
-        # Job title
+        # Fallback to JSON-LD for job data
         job_title = ''
-        job_title_selectors = [
-            '.jobs-unified-top-card__job-title',
-            'h1.t-24.t-bold',
-            '.top-card-layout__title',
-            'h1[data-test-id="jobs-details-hero-title"]',
-            'h1.job-details-jobs-unified-top-card__job-title',
-            'main h1'
-        ]
-        for selector in job_title_selectors:
-            title_elem = soup.select_one(selector)
-            if title_elem:
-                job_title = title_elem.get_text().strip()
-                logger.debug(f"Found job title with selector '{selector}': {job_title}")
-                break
+        json_ld = soup.find('script', type='application/ld+json')
+        if json_ld:
+            try:
+                data = json.loads(json_ld.string)
+                if data.get('@type') == 'JobPosting':
+                    job_title = data.get('title', '')
+                    logger.debug(f"Found job title in JSON-LD: {job_title}")
+            except:
+                pass
+        
+        # If JSON-LD didn't provide job title, try CSS selectors
+        if not job_title:
+            job_title_selectors = [
+                '.jobs-unified-top-card__job-title',
+                'h1.t-24.t-bold',
+                '.top-card-layout__title',
+                'h1[data-test-id="jobs-details-hero-title"]',
+                'h1.job-details-jobs-unified-top-card__job-title',
+                'main h1'
+            ]
+            for selector in job_title_selectors:
+                title_elem = soup.select_one(selector)
+                if title_elem:
+                    job_title = title_elem.get_text().strip()
+                    logger.debug(f"Found job title with selector '{selector}': {job_title}")
+                    break
         
         if not job_title:
             logger.warning("No job title found")
@@ -630,16 +657,10 @@ def scrape_job_details(job_url, licensed, session):
     except Exception as e:
         logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
         return None
-    finally:
-        html_session.close()
-
-# Add this after other environment variables
-LINKEDIN_COOKIES = os.getenv('LINKEDIN_COOKIES', '')  # LinkedIn cookies JSON string
 
 def verify_cookies(session):
     """Verify LinkedIn cookies are valid by checking authenticated profile endpoint"""
     try:
-        # Test with me endpoint or profile to verify authentication
         test_url = "https://www.linkedin.com/voyager/api/identity/profiles/me"
         response = session.get(test_url, timeout=10, allow_redirects=True)
         
@@ -663,12 +684,9 @@ def verify_cookies(session):
 
 def create_linkedin_session_with_auth():
     """Create authenticated LinkedIn session with manual cookie handling"""
-    # Create session
     session = requests.Session()
     
-    # Configure retries
     try:
-        # Try new syntax first (urllib3 2.0+)
         retry_strategy = Retry(
             total=5,
             backoff_factor=2,
@@ -676,7 +694,6 @@ def create_linkedin_session_with_auth():
             allowed_methods=["HEAD", "GET", "OPTIONS"]
         )
     except TypeError:
-        # Fallback for older urllib3 versions
         retry_strategy = Retry(
             total=5,
             backoff_factor=2,
@@ -688,7 +705,6 @@ def create_linkedin_session_with_auth():
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     
-    # Load LinkedIn cookies (Method 1 - manual JSON)
     li_at_present = False
     if LINKEDIN_COOKIES:
         try:
@@ -701,14 +717,13 @@ def create_linkedin_session_with_auth():
                     value = cookie.get('value')
                     
                     if name and value:
-                        # Simple cookie setting - requests handles domain/path automatically
                         session.cookies.set(name, value)
                         loaded_count += 1
                         logger.debug(f"Loaded cookie: {name}")
                         if name == 'li_at':
                             li_at_present = True
             
-            logger.info(f"✅ Successfully loaded {loaded_count} LinkedIn cookies")
+            logger.info(f"✅ Successfully loaded {loaded_count} LinkedIn cookies (li_at: {'✅' if li_at_present else '❌'})")
             print(f"🍪 Loaded {loaded_count} cookies (li_at: {'✅' if li_at_present else '❌'})")
             
         except json.JSONDecodeError as e:
@@ -721,21 +736,7 @@ def create_linkedin_session_with_auth():
         logger.warning("⚠️ No LinkedIn cookies provided - limited access to public content only")
         print("⚠️ No cookies - public jobs only (no application URLs)")
     
-    # Set realistic browser headers
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0'
-    })
+    session.headers.update(headers)
     
     if li_at_present:
         verify_cookies(session)
@@ -754,7 +755,6 @@ def crawl(wp_headers, processed_ids, licensed):
     total_jobs = 0
     start_page = load_last_page() or 0
     
-    # Create authenticated session
     try:
         session = create_linkedin_session_with_auth()
     except Exception as e:
@@ -762,7 +762,6 @@ def crawl(wp_headers, processed_ids, licensed):
         print("❌ Session creation failed")
         return
     
-    # Initial test request
     test_url = build_search_url(start_page)
     logger.info(f"🧪 Testing access: {test_url}")
     
@@ -775,8 +774,6 @@ def crawl(wp_headers, processed_ids, licensed):
             print("❌ LOGIN REQUIRED - Update cookies")
             return
         
-        # Save debug HTML
-        os.makedirs("uploads", exist_ok=True)
         debug_file = f"uploads/debug_page_{start_page}.html"
         with open(debug_file, "w", encoding="utf-8") as f:
             f.write(test_response.text)
@@ -789,30 +786,26 @@ def crawl(wp_headers, processed_ids, licensed):
         print("❌ Network error - check connection")
         return
     
-    # Main crawling loop
     page_num = start_page
     empty_pages = 0
-    max_empty_pages = 10  # Increased tolerance
+    max_empty_pages = 10
     
     while empty_pages < max_empty_pages:
         url = build_search_url(page_num)
         logger.info(f"📄 Fetching page {page_num}: {url}")
         
-        # Random delay
         time.sleep(random.uniform(10, 20))
         
         try:
             response = session.get(url, timeout=40)
             response.raise_for_status()
             
-            # Check for blocks
             if any(block in response.url.lower() for block in ["login", "challenge", "captcha"]):
                 logger.error("🔒 Session expired - get fresh cookies")
                 break
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Save page for debugging
             debug_file = f"uploads/debug_page_{page_num}.html"
             with open(debug_file, "w", encoding="utf-8") as f:
                 f.write(response.text)
@@ -820,13 +813,12 @@ def crawl(wp_headers, processed_ids, licensed):
             job_urls = extract_job_urls_from_page(response.text, soup)
             logger.info(f"🎯 Extracted {len(job_urls)} job URLs from page {page_num}")
             
-            # Validate URLs
             job_urls_list = []
             for url in job_urls:
                 if validate_job_url(url):
                     job_urls_list.append(url)
             
-            job_urls_list = list(dict.fromkeys(job_urls_list))[:20]  # Dedupe and limit
+            job_urls_list = list(dict.fromkeys(job_urls_list))[:20]
             
             if not job_urls_list:
                 logger.warning(f"📭 No valid jobs found on page {page_num}")
@@ -837,7 +829,6 @@ def crawl(wp_headers, processed_ids, licensed):
             
             empty_pages = 0
             
-            # Process jobs
             for idx, job_url in enumerate(job_urls_list):
                 logger.info(f"🔄 Job {idx + 1}/{len(job_urls_list)}: {job_url}")
                 
@@ -849,7 +840,6 @@ def crawl(wp_headers, processed_ids, licensed):
                         failure_count += 1
                         continue
                     
-                    # Map data
                     field_names = [
                         "job_title", "company_logo", "company_name", "company_url", "location",
                         "environment", "job_type", "level", "job_functions", "industries",
@@ -883,7 +873,6 @@ def crawl(wp_headers, processed_ids, licensed):
                     
                     total_jobs += 1
                     
-                    # Save to WordPress
                     company_id, company_msg = save_company_to_wordpress(idx, job_dict, wp_headers, licensed)
                     if not company_id:
                         logger.error(f"💾 Company failed: {company_msg}")
@@ -934,16 +923,12 @@ def extract_job_urls_from_page(html_content, soup):
     """Advanced job URL extraction without Selenium"""
     job_urls = set()
     
-    # Clean URL function
     def clean_url(url):
-        # Remove query parameters and fragments
         parsed = urlparse(url)
         clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         return clean if '/jobs/view/' in clean and validate_job_url(clean) else None
     
-    # 1. COMPREHENSIVE REGEX PATTERNS
     job_patterns = [
-        # Direct job URLs
         r'(https?://www\.linkedin\.com/jobs/view/\d+[^"\s\'<>]*)',
         r'href=[\'"](/jobs/view/\d+[^"\'>]*)[\'"]',
         r'"jobUrl":"(/jobs/view/\d+[^"]*)"'
@@ -959,7 +944,6 @@ def extract_job_urls_from_page(html_content, soup):
             if cleaned_url:
                 job_urls.add(cleaned_url)
     
-    # 2. JAVASCRIPT VARIABLE EXTRACTION
     js_patterns = [
         r'window\.initialServerState\s*=\s*({.*?});',
         r'window\.__INITIAL_STATE__\s*=\s*({.*?});',
@@ -981,20 +965,17 @@ def extract_job_urls_from_page(html_content, soup):
             except json.JSONDecodeError:
                 continue
     
-    # 3. DATA ATTRIBUTES SCAN
     data_attrs = soup.find_all(attrs={'data-job-id': True})
     for elem in data_attrs:
         job_id = elem.get('data-job-id')
-        if job_id and len(job_id) > 5:
+        if job_id and len(job_id) > 5 and job_id.isdigit():
             job_urls.add(f'https://www.linkedin.com/jobs/view/{job_id}')
     
-    # 4. LINK SCAN WITH CONTEXT
     all_links = soup.find_all('a', href=True)
     for link in all_links:
         href = link.get('href', '')
         text = link.get_text().strip().lower()
         
-        # Look for job links near job-related text
         if any(keyword in href for keyword in ['/jobs/view/', '/job/']) and \
            any(job_context in text for job_context in ['apply', 'job', 'position']):
             full_url = href if href.startswith('http') else 'https://www.linkedin.com' + href
@@ -1002,7 +983,6 @@ def extract_job_urls_from_page(html_content, soup):
             if cleaned_url:
                 job_urls.add(cleaned_url)
     
-    # 5. MICRODATA/JSON-LD
     json_ld = soup.find_all('script', type='application/ld+json')
     for script in json_ld:
         try:
@@ -1027,7 +1007,6 @@ def extract_job_urls_from_page(html_content, soup):
 def extract_jobs_from_json(data, job_urls):
     """Extract job URLs from nested JSON structure"""
     if isinstance(data, dict):
-        # Look for job URL patterns
         for key, value in data.items():
             if isinstance(value, str) and '/jobs/view/' in value:
                 job_urls.add(value)
@@ -1076,7 +1055,6 @@ def main():
         logger.error(f"Fatal error: {str(e)}", exc_info=True)
         print(f"❌ Fatal error: {str(e)}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
