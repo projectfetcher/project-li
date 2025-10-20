@@ -823,7 +823,7 @@ def crawl(wp_headers, processed_ids, licensed):
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
-    pages_to_scrape = 5  # Reduced for testing
+   pages_to_scrape = 1000  # Or a very large number to cover all pages
     
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
@@ -853,7 +853,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 logger.warning(f"No jobs found on page {i}, possibly end of results")
                 break
             
-            for index, job_url in enumerate(urls[:3]):  # Limit to 3 jobs per page for testing
+            for index, job_url in enumerate(urls):  # Process all jobs on the page
                 logger.info(f"Processing job {index + 1}/{len(urls)}: {job_url}")
                 
                 job_data = scrape_job_details(job_url, licensed, session)
