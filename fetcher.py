@@ -29,14 +29,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get environment variables - FIXED: Use LICENSE_KEY instead of FETCHER_TOKEN
+# Get environment variables
 logger.debug("Loading environment variables")
 WP_SITE_URL = os.getenv('WP_SITE_URL')
 WP_USERNAME = os.getenv('WP_USERNAME')
 WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')  # Optional keyword
-LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # FIXED: License key for full data access
+LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # License key for full data access
 
 # URL encode country and keyword for LinkedIn search
 COUNTRY_ENCODED = urllib.parse.quote(COUNTRY or 'Worldwide')
@@ -64,7 +64,7 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# FIXED: Valid license key for full data scraping
+# Valid license key for full data scraping
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
 
@@ -134,7 +134,6 @@ def validate_environment():
     if not COUNTRY:
         missing.append("COUNTRY")
     
-    # LICENSE_KEY is optional
     if missing:
         logger.error(f"Missing required environment variables: {', '.join(missing)}")
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
@@ -153,7 +152,6 @@ def build_search_url(page=0):
         'start': str(page * 25)
     }
     
-    # Remove empty keyword param if no keyword
     if not KEYWORD:
         params.pop('keywords', None)
     
@@ -379,12 +377,9 @@ def scrape_job_details(job_url, licensed, session):
             company_logo_elem = soup.select_one("img.artdeco-entity-image.artdeco-entity-image--square-5")
             company_logo = company_logo_elem.get('src') if company_logo_elem and company_logo_elem.get('src') else ''
             if company_logo and 'media.licdn.com' in company_logo:
-                # Remove query parameters
                 company_logo = re.sub(r'\?.*$', '', company_logo)
-                # Ensure the URL ends with .jpg
                 if not company_logo.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
                     company_logo = f"{company_logo}.jpg"
-                # Validate the logo URL
                 try:
                     logo_response = session.head(company_logo, headers=headers, timeout=5)
                     content_type = logo_response.headers.get('content-type', '')
@@ -485,9 +480,7 @@ def scrape_job_details(job_url, licensed, session):
         if licensed:
             description_container = soup.select_one(".show-more-less-html__markup")
             if description_container:
-                # Extract text using .get_text() with newline separator
                 raw_text = description_container.get_text(separator='\n').strip()
-                # Split into paragraphs and filter out unwanted phrases
                 unwanted_phrases = [
                     "Never Miss a Job Update Again",
                     "Don't Keep! Kindly Share:",
@@ -514,7 +507,6 @@ def scrape_job_details(job_url, licensed, session):
                     elif norm_para:
                         logger.info(f"scrape_job_details: Removed duplicate paragraph for {job_title}: {para[:50]}...")
                 job_description = '\n\n'.join(unique_paragraphs)
-                # Clean up 'Show more/less' text and apply paragraph length limit
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
                 delimiter = "\n\n"
@@ -631,8 +623,7 @@ def scrape_job_details(job_url, licensed, session):
             if company_url and company_url != UNLICENSED_MESSAGE:
                 logger.info(f"scrape_job_details: Fetching company page: {company_url}")
                 try:
-                    # Attempt to fetch company page with retry
-                    for attempt in range(3):  # Try three times
+                    for attempt in range(3):
                         try:
                             company_response = session.get(company_url, headers=headers, timeout=15)
                             logger.debug(f"scrape_job_details: Company page GET response status={company_response.status_code}, headers={company_response.headers}")
@@ -645,18 +636,15 @@ def scrape_job_details(job_url, licensed, session):
                             time.sleep(2)
                     company_soup = BeautifulSoup(company_response.text, 'html.parser')
                     
-                    # Scrape company details using data-test-id
                     company_details_elem = company_soup.select_one("p[data-test-id='about-us__description']")
                     company_details = company_details_elem.get_text().strip() if company_details_elem else ''
                     logger.info(f"scrape_job_details: Scraped Company Details: {company_details[:100] + '...' if company_details else ''}")
                     
-                    # Scrape website using data-test-id
                     website_div = company_soup.select_one("div[data-test-id='about-us__website']")
                     company_website_anchor = website_div.select_one("dd a") if website_div else None
                     company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
                     logger.info(f"scrape_job_details: Scraped Company Website URL: {company_website_url}")
                     
-                    # Handle LinkedIn redirect URLs
                     if 'linkedin.com/redir/redirect' in company_website_url:
                         parsed_url = urlparse(company_website_url)
                         query_params = parse_qs(parsed_url.query)
@@ -666,7 +654,6 @@ def scrape_job_details(job_url, licensed, session):
                         else:
                             logger.warning(f"scrape_job_details: No 'url' param in LinkedIn redirect for {company_name}")
                     
-                    # Resolve external company website
                     if company_website_url and 'linkedin.com' not in company_website_url:
                         logger.debug(f"scrape_job_details: Following company website URL: {company_website_url}")
                         try:
@@ -687,7 +674,6 @@ def scrape_job_details(job_url, licensed, session):
                                 logger.warning(f"scrape_job_details: No external URL found in error for {company_name}")
                                 company_website_url = ''
                     else:
-                        # Try to find website in company description
                         if company_details:
                             url_pattern = r'https?://(?!www\.linkedin\.com)[^\s]+'
                             urls = re.findall(url_pattern, company_details)
@@ -710,12 +696,10 @@ def scrape_job_details(job_url, licensed, session):
                             logger.warning(f"scrape_job_details: No company description found for {company_name}")
                             company_website_url = ''
                     
-                    # Skip LinkedIn URLs
                     if company_website_url and 'linkedin.com' in company_website_url:
                         logger.warning(f"scrape_job_details: Skipping LinkedIn URL for company website: {company_website_url}")
                         company_website_url = ''
                     
-                    # Helper function to get company details
                     def get_company_detail(label):
                         logger.debug(f"scrape_job_details: get_company_detail called with label={label}")
                         div_selector = f"div[data-test-id='about-us__{label.lower()}']"
@@ -741,7 +725,6 @@ def scrape_job_details(job_url, licensed, session):
                     company_specialties = get_company_detail("specialties")
                     logger.info(f"scrape_job_details: Scraped Company Specialties: {company_specialties}")
                     
-                    # For address, get primary location
                     primary_li = company_soup.select_one("li span.tag-sm.tag-enabled")
                     if primary_li:
                         address_div = primary_li.find_next_sibling("div")
@@ -778,7 +761,6 @@ def scrape_job_details(job_url, licensed, session):
             company_address = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set company fields to {UNLICENSED_MESSAGE}")
         
-        # Return structured row data
         row = [
             job_title,
             company_logo,
@@ -815,6 +797,17 @@ def scrape_job_details(job_url, licensed, session):
         logger.error(f"scrape_job_details: Error in scrape_job_details for {job_url}: {str(e)}", exc_info=True)
         return None
 
+def get_total_pages(soup):
+    pagination = soup.select_one("ul.artdeco-pagination__pages > li:last-child > button")
+    if pagination:
+        try:
+            return int(pagination.get_text().strip())
+        except ValueError:
+            logger.warning("Could not parse total pages, defaulting to large number")
+            return 1000
+    logger.info("No pagination found, assuming single page")
+    return 1
+
 def crawl(wp_headers, processed_ids, licensed):
     """Main crawling function"""
     logger.info(f"Starting crawl for country={COUNTRY}, keyword={KEYWORD or 'ALL JOBS'}, licensed={licensed}")
@@ -836,15 +829,11 @@ def crawl(wp_headers, processed_ids, licensed):
     total_pages = get_total_pages(soup)
     logger.info(f"Detected {total_pages} total pages")
     
-    pages_to_scrape = 1000  # Or a very large number to cover all pages
-    # Ensure this line is indented with exactly 4 spaces to match the function body
-    
     for i in range(start_page, total_pages):
         url = build_search_url(i)
         logger.info(f"Fetching page {i}: {url}")
-        # ... rest of the function ...
         
-        time.sleep(random.uniform(3, 7))  # Reduced delay for testing
+        time.sleep(random.uniform(1, 3))
         
         try:
             response = session.get(url, headers=headers, timeout=20)
@@ -861,10 +850,10 @@ def crawl(wp_headers, processed_ids, licensed):
             logger.info(f"Found {len(urls)} job URLs on page {i}")
             
             if not urls:
-                logger.warning(f"No jobs found on page {i}, possibly end of results")
+                logger.warning(f"No jobs found on page {i}, stopping crawl")
                 break
             
-            for index, job_url in enumerate(urls):  # Process all jobs on the page
+            for index, job_url in enumerate(urls):
                 logger.info(f"Processing job {index + 1}/{len(urls)}: {job_url}")
                 
                 job_data = scrape_job_details(job_url, licensed, session)
@@ -900,14 +889,12 @@ def crawl(wp_headers, processed_ids, licensed):
                 
                 total_jobs += 1
                 
-                # Save company
                 company_id, company_msg = save_company_to_wordpress(index, job_dict, wp_headers, licensed)
                 if not company_id:
                     logger.error(f"Failed to save company: {company_msg}")
                     failure_count += 1
                     continue
                 
-                # Save job
                 job_post_id, job_msg = save_article_to_wordpress(index, job_dict, company_id, wp_headers, licensed)
                 
                 if job_post_id:
@@ -919,7 +906,7 @@ def crawl(wp_headers, processed_ids, licensed):
                     failure_count += 1
                     print(f"✗ Failed: {job_title} at {company_name} - {job_msg}")
                 
-                time.sleep(random.uniform(2, 5))  # Rate limiting
+                time.sleep(random.uniform(0.5, 2))
             
             save_last_page(i + 1)
             
@@ -945,20 +932,15 @@ def main():
         print(f"📍 Country: {COUNTRY}")
         print(f"🔍 Keyword: {KEYWORD or 'ALL JOBS'}")
         
-        # Validate environment (LICENSE_KEY is optional)
         validate_environment()
         
-        # FIXED: Check license with proper LICENSE_KEY validation
         licensed = get_license_status()
         
-        # Create WP headers
         wp_headers = create_wp_auth_headers()
         
-        # Load processed IDs
         processed_ids = load_processed_ids()
         print(f"📋 Found {len(processed_ids)} previously processed jobs")
         
-        # Start crawling
         crawl(wp_headers, processed_ids, licensed)
         
         print("✅ Job fetcher completed!")
