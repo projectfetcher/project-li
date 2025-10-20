@@ -963,4 +963,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()..why is it scraping a few jobs it should scrape all jobs on the page and then go to the next page and so on
+    main()
