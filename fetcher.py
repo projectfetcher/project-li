@@ -823,15 +823,26 @@ def crawl(wp_headers, processed_ids, licensed):
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
-   pages_to_scrape = 1000  # Or a very large number to cover all pages
     
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     session.mount('https://', HTTPAdapter(max_retries=retries))
     
-    for i in range(start_page, start_page + pages_to_scrape):
+    # Get first page to determine total pages
+    first_url = build_search_url(start_page)
+    response = session.get(first_url, headers=headers, timeout=20)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, 'html.parser')
+    total_pages = get_total_pages(soup)
+    logger.info(f"Detected {total_pages} total pages")
+    
+    pages_to_scrape = 1000  # Or a very large number to cover all pages
+    # Ensure this line is indented with exactly 4 spaces to match the function body
+    
+    for i in range(start_page, total_pages):
         url = build_search_url(i)
         logger.info(f"Fetching page {i}: {url}")
+        # ... rest of the function ...
         
         time.sleep(random.uniform(3, 7))  # Reduced delay for testing
         
