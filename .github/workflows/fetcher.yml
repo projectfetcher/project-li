@@ -43,7 +43,7 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -59,39 +59,46 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y wget unzip fontconfig libfontconfig1 libjpeg8 libpng16-16 libx11-6 libxext6 libxrender1 xfonts-75dpi xfonts-base
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-        sudo dpkg -i google-chrome-stable_current_amd64.deb
-        sudo apt-get -f install -y
+        sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
         
-    - name: Install ChromeDriver
+    - name: Install ChromeDriver (auto-matching)
       run: |
-        # Get the full Chrome version (e.g., 141.0.7390.107)
-        CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f 3)
-        CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d '.' -f 1)
+        set -e
+        CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
+        CHROME_MAJOR=$(echo "$CHROME_VERSION" | cut -d. -f1)
         echo "Detected Chrome version: $CHROME_VERSION (major: $CHROME_MAJOR)"
         
-        # Fetch the latest ChromeDriver version for the major version from chrome-for-testing
+        # Try fetching from known-good versions list
         LATEST_JSON=$(curl -sS https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json)
-        CHROMEDRIVER_VERSION=$(echo $LATEST_JSON | grep -o "\"version\":\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+\"" | grep "\"$CHROME_MAJOR\." | head -1 | cut -d '"' -f 4)
+        CHROMEDRIVER_VERSION=$(echo "$LATEST_JSON" | grep -o "\"version\":\"${CHROME_MAJOR}\.[0-9.]\+\"" | head -1 | cut -d'"' -f4)
         
         if [ -z "$CHROMEDRIVER_VERSION" ]; then
-          echo "No exact match found for Chrome $CHROME_MAJOR; falling back to latest stable (114.0.5735.90)"
-          CHROMEDRIVER_VERSION="114.0.5735.90"
+          echo "⚠️ No exact ChromeDriver found for Chrome $CHROME_MAJOR — finding closest match..."
+          CHROMEDRIVER_VERSION=$(echo "$LATEST_JSON" | grep -o "\"version\":\"[0-9.]\+\"" | tail -1 | cut -d'"' -f4)
         fi
         
         echo "Using ChromeDriver version: $CHROMEDRIVER_VERSION"
+        DOWNLOAD_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip"
         
-        # Download and install ChromeDriver (fallback to legacy URL if needed)
-        DOWNLOAD_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-${CHROMEDRIVER_VERSION}.zip"
-        if [ "$CHROMEDRIVER_VERSION" = "114.0.5735.90" ]; then
+        if ! wget -q --spider "$DOWNLOAD_URL"; then
+          echo "❌ ChromeDriver not found for $CHROMEDRIVER_VERSION — falling back to legacy mirror..."
+          CHROMEDRIVER_VERSION="114.0.5735.90"
           DOWNLOAD_URL="https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
         fi
         
+        echo "Downloading from: $DOWNLOAD_URL"
         wget -N "$DOWNLOAD_URL" -P /tmp/
-        unzip /tmp/*.zip -d /tmp/
-        sudo mv /tmp/chromedriver /usr/local/bin/chromedriver
+        unzip -o /tmp/*.zip -d /tmp/
+        if [ -d "/tmp/chromedriver-linux64" ]; then
+          sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/
+        elif [ -f "/tmp/chromedriver" ]; then
+          sudo mv /tmp/chromedriver /usr/local/bin/
+        else
+          echo "❌ ChromeDriver not found after extraction"; exit 1
+        fi
         sudo chmod +x /usr/local/bin/chromedriver
         chromedriver --version
-        
+
     - name: Create uploads directory
       run: mkdir -p uploads
       
@@ -105,12 +112,11 @@ jobs:
         LICENSE_KEY: ${{ github.event.inputs.license_key }}
         LINKEDIN_COOKIES: ${{ github.event.inputs.linkedin_cookies }}
       run: |
-        echo "Starting job fetcher with authentication..."
-        echo "Country: ${{ github.event.inputs.country }}"
-        echo "Keyword: '${{ github.event.inputs.keyword }}'"
-        echo "Site URL: ${{ github.event.inputs.wp_site_url }}"
-        echo "License key: ${LICENSE_KEY:0:8}..."
-        echo "LinkedIn cookies: ${LINKEDIN_COOKIES:0:50}..."
+        echo "Starting job fetcher..."
+        echo "Country: $COUNTRY"
+        echo "Keyword: $KEYWORD"
+        echo "Site: $WP_SITE_URL"
+        echo "License: ${LICENSE_KEY:0:8}..."
         python fetcher.py
         
     - name: Upload logs and results
