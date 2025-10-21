@@ -20,7 +20,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchElementException
 
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
@@ -362,7 +362,9 @@ def save_last_page(page):
         logger.error(f"Failed to save last page: {str(e)}")
 
 def scrape_job_details(job_url, licensed, session):
-    """Scrape detailed job information from LinkedIn job page"""
+    """Scrape detailed job information from LinkedIn job page
+    Note: Ensure chromedriver version matches Chrome version (e.g., 141.0.7390.78 for Chrome 141.0.7390.107)
+    """
     logger.debug(f"scrape_job_details called with job_url={job_url}, licensed={licensed}")
     try:
         logger.debug(f"scrape_job_details: Sending GET request to {job_url} with headers={headers}")
@@ -547,22 +549,35 @@ def scrape_job_details(job_url, licensed, session):
                 options.add_argument(f"user-agent={headers['user-agent']}")
                 driver = webdriver.Chrome(options=options)
                 driver.get(job_url)
-                wait = WebDriverWait(driver, 10)
+                
+                # Wait for the main job container to ensure page is loaded
+                wait = WebDriverWait(driver, 15)  # Increased wait time
+                try:
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.job-view-layout.jobs-details")))
+                    logger.debug("scrape_job_details: Job details container loaded")
+                except TimeoutException:
+                    logger.warning("scrape_job_details: Job details container not found within timeout")
+                
                 # Try multiple selectors for the apply button
                 apply_selectors = [
-                    '[id="jobs-apply-button-id"]',
-                    'button.jobs-apply-button',
-                    'a.jobs-apply-button',
-                    'button[data-tracking-control-name="public_jobs_apply-link-offsite"]'
+                    (By.CSS_SELECTOR, '[id="jobs-apply-button-id"]'),
+                    (By.CSS_SELECTOR, 'button.jobs-apply-button'),
+                    (By.CSS_SELECTOR, 'a.jobs-apply-button'),
+                    (By.CSS_SELECTOR, 'button[data-tracking-control-name="public_jobs_apply-link-offsite"]'),
+                    (By.XPATH, '/html/body/div[6]/div[3]/div[2]/div/div/main/div[2]/div[1]/div/div[1]/div/div/div/div[6]/div/div/div/button'),
+                    (By.CSS_SELECTOR, 'div.jobs-apply-button--top-card button[role="link"]')
                 ]
                 apply_element = None
-                for selector in apply_selectors:
+                for by, selector in apply_selectors:
                     try:
-                        apply_element = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-                        logger.info(f"scrape_job_details: Found apply button with selector: {selector}")
+                        apply_element = wait.until(EC.element_to_be_clickable(selector))
+                        logger.info(f"scrape_job_details: Found apply button with selector: {by}={selector}")
+                        # Scroll to element to ensure visibility
+                        driver.execute_script("arguments[0].scrollIntoView(true);", apply_element)
+                        time.sleep(1)  # Brief pause after scrolling
                         break
                     except TimeoutException:
-                        logger.debug(f"scrape_job_details: Apply button not found with selector: {selector}")
+                        logger.debug(f"scrape_job_details: Apply button not found with selector: {by}={selector}")
                         continue
                 
                 if apply_element:
@@ -591,9 +606,9 @@ def scrape_job_details(job_url, licensed, session):
                                 logger.info(f"scrape_job_details: Found application link in application page: {resolved_application_info}")
                                 break
                 else:
-                    logger.warning(f"scrape_job_details: No apply button found for {job_url}")
-            except (TimeoutException, WebDriverException) as e:
-                logger.error(f"scrape_job_details: Failed to get application with Selenium: {str(e)}", exc_info=True)
+                    logger.warning(f"scrape_job_details: No apply button found for {job_url} after trying all selectors")
+            except (TimeoutException, WebDriverException, NoSuchElementException) as e:
+                logger.error(f"scrape_job_details: Failed to get application with Selenium for {job_url}: {str(e)}", exc_info=True)
                 resolved_application_url = ''
                 resolved_application_info = ''
             finally:
