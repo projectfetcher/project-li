@@ -45,14 +45,14 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Set up Python
-      uses: actions/setup-python@v5  # Updated to latest version
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 lxml urllib3 selenium  # Added selenium
+        pip install requests beautifulsoup4 lxml urllib3 selenium
         
     - name: Install Google Chrome
       run: |
@@ -60,15 +60,21 @@ jobs:
         sudo apt-get install -y wget unzip fontconfig libfontconfig1 libjpeg8 libpng16-16 libx11-6 libxext6 libxrender1 xfonts-75dpi xfonts-base
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
         sudo dpkg -i google-chrome-stable_current_amd64.deb
-        sudo apt-get -f install -y  # Fix missing dependencies
+        sudo apt-get -f install -y
         
     - name: Install ChromeDriver
       run: |
-        CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f 3 | cut -d '.' -f 1)
-        wget -N https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}.0.0.0/chromedriver-linux64.zip -P /tmp/
+        # Get the full Chrome version (e.g., 141.0.6773.0)
+        CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f 3)
+        echo "Detected Chrome version: $CHROME_VERSION"
+        # Fetch the latest ChromeDriver version compatible with the Chrome version
+        CHROMEDRIVER_VERSION=$(curl -sS "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%%.*}")
+        echo "Using ChromeDriver version: $CHROMEDRIVER_VERSION"
+        wget -N https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver-linux64.zip -P /tmp/
         unzip /tmp/chromedriver-linux64.zip -d /tmp/
         sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
         sudo chmod +x /usr/local/bin/chromedriver
+        chromedriver --version
         
     - name: Create uploads directory
       run: mkdir -p uploads
@@ -102,4 +108,4 @@ jobs:
           uploads/processed_job_ids.json
           uploads/last_processed_page.txt
         retention-days: 7
-        compression-level: 6  # Fixed syntax by removing ..
+        compression-level: 6
