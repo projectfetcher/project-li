@@ -550,23 +550,9 @@ def scrape_job_details(job_url, licensed, session):
         # Application URL (licensed only)
         application_url = ''
         if licensed:
-            apply_button_container = soup.select_one(".jobs-apply-button--top-card")
-            if apply_button_container:
-                apply_button = apply_button_container.select_one("button, a")
-                if apply_button:
-                    button_text = apply_button.get_text().strip()
-                    if 'Easy Apply' in button_text:
-                        application_url = job_url
-                        logger.info(f"scrape_job_details: Easy Apply detected, setting application_url to job_url: {application_url}")
-                    elif apply_button.name == 'a':
-                        application_url = apply_button.get('href', '')
-                        logger.info(f"scrape_job_details: Scraped external Application URL: {application_url}")
-                    else:
-                        logger.warning(f"scrape_job_details: Unknown apply button type: {button_text}")
-                else:
-                    logger.warning("scrape_job_details: Apply button container found but no button or link inside")
-            else:
-                logger.warning("scrape_job_details: No apply button container found")
+            application_anchor = soup.select_one("#teriary-cta-container > div > a")
+            application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
+            logger.info(f"scrape_job_details: Scraped Application URL: {application_url}")
         else:
             application_url = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set application_url={UNLICENSED_MESSAGE}")
@@ -575,52 +561,42 @@ def scrape_job_details(job_url, licensed, session):
         resolved_application_info = ''
         resolved_application_url = ''
         if licensed and application_url and application_url != UNLICENSED_MESSAGE:
-            if application_url == job_url:
-                resolved_application_url = job_url
-                resolved_application_info = 'Easy Apply on LinkedIn'
-                logger.info(f"scrape_job_details: Easy Apply job, no need to resolve, set to {resolved_application_url}")
-            else:
-                logger.debug(f"scrape_job_details: Following application URL: {application_url}")
-                try:
-                    time.sleep(5)
-                    resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True)
-                    logger.debug(f"scrape_job_details: Application URL GET response status={resp_app.status_code}, headers={resp_app.headers}, final_url={resp_app.url}")
-                    resolved_application_url = resp_app.url
-                    logger.info(f"scrape_job_details: Resolved Application URL: {resolved_application_url}")
-                    app_soup = BeautifulSoup(resp_app.text, 'html.parser')
-                    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                    emails = re.findall(email_pattern, resp_app.text)
-                    if emails:
-                        resolved_application_info = emails[0]
-                        logger.info(f"scrape_job_details: Found email in application page: {resolved_application_info}")
-                    else:
-                        links = app_soup.find_all('a', href=True)
-                        for link in links:
-                            href = link['href']
-                            if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                                resolved_application_info = href
-                                logger.info(f"scrape_job_details: Found application link in application page: {resolved_application_info}")
-                                break
-                except Exception as e:
-                    logger.error(f"scrape_job_details: Failed to follow application URL redirect: {str(e)}", exc_info=True)
-                    error_str = str(e)
-                    external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
-                    if external_url_match:
-                        external_url = external_url_match.group(1)
-                        resolved_application_url = f"https://{external_url}"
-                        logger.info(f"scrape_job_details: Extracted external URL from error for application: {resolved_application_url}")
-                    else:
-                        resolved_application_url = description_application_url if description_application_url else application_url
-                        logger.warning(f"scrape_job_details: No external URL found in error, using fallback: {resolved_application_url}")
+            logger.debug(f"scrape_job_details: Following application URL: {application_url}")
+            try:
+                time.sleep(5)
+                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True)
+                logger.debug(f"scrape_job_details: Application URL GET response status={resp_app.status_code}, headers={resp_app.headers}, final_url={resp_app.url}")
+                resolved_application_url = resp_app.url
+                logger.info(f"scrape_job_details: Resolved Application URL: {resolved_application_url}")
+                app_soup = BeautifulSoup(resp_app.text, 'html.parser')
+                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+                emails = re.findall(email_pattern, resp_app.text)
+                if emails:
+                    resolved_application_info = emails[0]
+                    logger.info(f"scrape_job_details: Found email in application page: {resolved_application_info}")
+                else:
+                    links = app_soup.find_all('a', href=True)
+                    for link in links:
+                        href = link['href']
+                        if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
+                            resolved_application_info = href
+                            logger.info(f"scrape_job_details: Found application link in application page: {resolved_application_info}")
+                            break
+            except Exception as e:
+                logger.error(f"scrape_job_details: Failed to follow application URL redirect: {str(e)}", exc_info=True)
+                error_str = str(e)
+                external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
+                if external_url_match:
+                    external_url = external_url_match.group(1)
+                    resolved_application_url = f"https://{external_url}"
+                    logger.info(f"scrape_job_details: Extracted external URL from error for application: {resolved_application_url}")
+                else:
+                    resolved_application_url = description_application_url if description_application_url else application_url
+                    logger.warning(f"scrape_job_details: No external URL found in error, using fallback: {resolved_application_url}")
         else:
-            if not licensed:
-                resolved_application_info = UNLICENSED_MESSAGE
-                resolved_application_url = UNLICENSED_MESSAGE
-                logger.debug(f"scrape_job_details: Unlicensed, set resolved_application_info={UNLICENSED_MESSAGE}, resolved_application_url={UNLICENSED_MESSAGE}")
-            else:
-                resolved_application_url = ''
-                resolved_application_info = ''
-                logger.debug("scrape_job_details: No application URL to resolve")
+            resolved_application_info = UNLICENSED_MESSAGE
+            resolved_application_url = UNLICENSED_MESSAGE
+            logger.debug(f"scrape_job_details: Unlicensed, set resolved_application_info={UNLICENSED_MESSAGE}, resolved_application_url={UNLICENSED_MESSAGE}")
         
         # Final application details
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
@@ -847,7 +823,7 @@ def crawl(wp_headers, processed_ids, licensed):
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
-    pages_to_scrape = 5  # Reduced for testing
+    pages_to_scrape = 100  # Reduced for testing
     
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
@@ -877,7 +853,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 logger.warning(f"No jobs found on page {i}, possibly end of results")
                 break
             
-            for index, job_url in enumerate(urls[:3]):  # Limit to 3 jobs per page for testing
+            for index, job_url in enumerate(urls):  # Process all jobs on the page
                 logger.info(f"Processing job {index + 1}/{len(urls)}: {job_url}")
                 
                 job_data = scrape_job_details(job_url, licensed, session)
@@ -988,4 +964,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
