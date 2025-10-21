@@ -20,6 +20,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
@@ -41,9 +43,14 @@ WP_SITE_URL = os.getenv('WP_SITE_URL', 'https://mauritius.mimusjobs.com')
 WP_USERNAME = os.getenv('WP_USERNAME')
 WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY', 'united states')
-KEYWORD = os.getenv('KEYWORD', '')  # Optional keyword
-LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # License key for full data access
-LINKEDIN_COOKIES = json.loads(os.getenv('LINKEDIN_COOKIES', '[]'))  # Parse cookies from env
+KEYWORD = os.getenv('KEYWORD', '')
+LICENSE_KEY = os.getenv('LICENSE_KEY', '')
+try:
+    LINKEDIN_COOKIES = json.loads(os.getenv('LINKEDIN_COOKIES', '[]'))
+except json.JSONDecodeError as e:
+    logger.error(f"Failed to parse LINKEDIN_COOKIES: {str(e)}")
+    LINKEDIN_COOKIES = []
+    print(f"❌ Invalid LINKEDIN_COOKIES format: {str(e)}")
 
 # URL encode country and keyword for LinkedIn search
 COUNTRY_ENCODED = urllib.parse.quote(COUNTRY or 'Worldwide')
@@ -147,6 +154,7 @@ def validate_environment():
     logger.info("All required environment variables validated successfully")
     logger.info(f"Search configuration: Country='{COUNTRY}', Keyword='{KEYWORD or 'ALL JOBS'}'")
     logger.info(f"License key received: {'Yes' if LICENSE_KEY else 'No'}")
+    logger.info(f"LinkedIn cookies received: {len(LINKEDIN_COOKIES)} cookies")
     return True
 
 def build_search_url(page=0):
@@ -370,8 +378,9 @@ def setup_selenium_driver():
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument(f'user-agent={headers["user-agent"]}')
     try:
-        driver = webdriver.Chrome(options=chrome_options)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         logger.debug("Selenium WebDriver initialized successfully")
+        logger.debug(f"Chrome version: {driver.capabilities['browserVersion']}")
         return driver
     except Exception as e:
         logger.error(f"Failed to initialize Selenium WebDriver: {str(e)}")
@@ -380,17 +389,19 @@ def setup_selenium_driver():
 def add_cookies_to_selenium(driver, url):
     """Add LinkedIn cookies to Selenium WebDriver"""
     try:
-        driver.get(url)  # Navigate to domain first to set cookies
+        driver.get('https://www.linkedin.com')  # Navigate to LinkedIn domain first
         for cookie in LINKEDIN_COOKIES:
             cookie_dict = {
                 'name': cookie.get('name'),
                 'value': cookie.get('value'),
                 'domain': cookie.get('domain', '.linkedin.com'),
-                'path': cookie.get('path', '/')
+                'path': cookie.get('path', '/'),
+                'secure': cookie.get('secure', True),
+                'httpOnly': cookie.get('httpOnly', False)
             }
             driver.add_cookie(cookie_dict)
             logger.debug(f"Added cookie to Selenium: {cookie['name']}")
-        driver.get(url)  # Reload page with cookies
+        driver.get(url)  # Navigate to job URL with cookies
         logger.info(f"Successfully added {len(LINKEDIN_COOKIES)} cookies to Selenium for {url}")
     except Exception as e:
         logger.error(f"Failed to add cookies to Selenium: {str(e)}")
@@ -802,9 +813,13 @@ def crawl(wp_headers, processed_ids, licensed):
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     session.mount('https://', HTTPAdapter(max_retries=retries))
     
-    # Add LinkedIn cookies to session
     for cookie in LINKEDIN_COOKIES:
-        session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain', '.linkedin.com'))
+        session.cookies.set(
+            name=cookie.get('name'),
+            value=cookie.get('value'),
+            domain=cookie.get('domain', '.linkedin.com'),
+            path=cookie.get('path', '/')
+        )
         logger.debug(f"Added cookie to session: {cookie['name']}")
     
     for i in range(start_page, start_page + pages_to_scrape):
@@ -819,11 +834,12 @@ def crawl(wp_headers, processed_ids, licensed):
             
             if "login" in response.url.lower() or "challenge" in response.url.lower():
                 logger.error("Login or CAPTCHA detected, stopping crawl")
+                print("❌ Login or CAPTCHA detected, check LINKEDIN_COOKIES")
                 break
             
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("ul.jobs-search__results-list li a")
-            urls = [a['href'] for a in job_list if a.get('href') and 'jobs/view' in a['href']]
+            urls = [urljoin('https://www.linkedin.com', a['href']) for a in job_list if a.get('href') and 'jobs/view' in a['href']]
             
             logger.info(f"Found {len(urls)} job URLs on page {i}")
             
