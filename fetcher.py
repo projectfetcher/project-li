@@ -14,12 +14,6 @@ import os
 import sys
 import traceback
 import urllib.parse
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
@@ -361,98 +355,51 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"Failed to save last page: {str(e)}")
 
-def setup_selenium_driver():
-    """Set up Selenium WebDriver with headless Chrome"""
-    chrome_options = Options()
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument(f'user-agent={headers["user-agent"]}')
-    try:
-        driver = webdriver.Chrome(options=chrome_options)
-        logger.debug("Selenium WebDriver initialized successfully")
-        return driver
-    except Exception as e:
-        logger.error(f"Failed to initialize Selenium WebDriver: {str(e)}")
-        raise
-
-def add_cookies_to_selenium(driver, url):
-    """Add LinkedIn cookies to Selenium WebDriver"""
-    try:
-        driver.get(url)  # Navigate to domain first to set cookies
-        for cookie in LINKEDIN_COOKIES:
-            cookie_dict = {
-                'name': cookie.get('name'),
-                'value': cookie.get('value'),
-                'domain': cookie.get('domain', '.linkedin.com'),
-                'path': cookie.get('path', '/')
-            }
-            driver.add_cookie(cookie_dict)
-            logger.debug(f"Added cookie to Selenium: {cookie['name']}")
-        driver.get(url)  # Reload page with cookies
-        logger.info(f"Successfully added {len(LINKEDIN_COOKIES)} cookies to Selenium for {url}")
-    except Exception as e:
-        logger.error(f"Failed to add cookies to Selenium: {str(e)}")
-
-def get_application_url_with_selenium(job_url, licensed):
-    """Use Selenium to click the Apply button and get the final application URL"""
+def get_application_url(job_url, soup, session, licensed):
+    """Extract application URL and email without Selenium"""
     if not licensed:
-        logger.debug("get_application_url_with_selenium: Unlicensed, returning UNLICENSED_MESSAGE")
+        logger.debug("get_application_url: Unlicensed, returning UNLICENSED_MESSAGE")
         return UNLICENSED_MESSAGE, UNLICENSED_MESSAGE
     
-    driver = None
     try:
-        driver = setup_selenium_driver()
-        if LINKEDIN_COOKIES:
-            add_cookies_to_selenium(driver, job_url)
-        else:
-            driver.get(job_url)
-        logger.debug(f"get_application_url_with_selenium: Navigated to {job_url}")
-        
+        # Try to find the Apply button
         apply_button_selector = "#jobs-apply-button-id"
-        try:
-            apply_button = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, apply_button_selector))
-            )
-            logger.debug("get_application_url_with_selenium: Apply button found")
+        apply_button = soup.select_one(apply_button_selector)
+        application_url = ''
+        if apply_button and apply_button.get('href'):
+            application_url = apply_button['href']
+            logger.debug(f"get_application_url: Found Apply button href={application_url}")
             
-            initial_href = apply_button.get_attribute('href') or ''
-            logger.debug(f"get_application_url_with_selenium: Initial href={initial_href}")
+            # Handle LinkedIn redirect URLs
+            if 'linkedin.com/redir/redirect' in application_url:
+                parsed_url = urlparse(application_url)
+                query_params = parse_qs(parsed_url.query)
+                if 'url' in query_params:
+                    application_url = unquote(query_params['url'][0])
+                    logger.info(f"get_application_url: Extracted redirect URL: {application_url}")
             
-            apply_button.click()
-            logger.debug("get_application_url_with_selenium: Apply button clicked")
-            
-            time.sleep(5)  # Allow time for redirect
-            final_url = driver.current_url
-            logger.debug(f"get_application_url_with_selenium: Final URL after click={final_url}")
-            
-            page_source = driver.page_source
-            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-            emails = re.findall(email_pattern, page_source)
-            final_email = emails[0] if emails else ''
-            logger.debug(f"get_application_url_with_selenium: Found email={final_email}")
-            
-            if final_url == job_url and initial_href:
-                logger.debug(f"get_application_url_with_selenium: No redirect, using initial href={initial_href}")
-                return initial_href, final_email
-            
-            return final_url, final_email
-            
-        except TimeoutException:
-            logger.warning(f"get_application_url_with_selenium: Apply button {apply_button_selector} not found or not clickable within timeout")
-            return '', ''
-        except WebDriverException as e:
-            logger.error(f"get_application_url_with_selenium: WebDriver error: {str(e)}")
-            return '', ''
-            
+            # Follow the URL to get the final destination
+            if application_url:
+                try:
+                    response = session.get(application_url, headers=headers, timeout=10, allow_redirects=True)
+                    application_url = response.url
+                    logger.info(f"get_application_url: Resolved final application URL: {application_url}")
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"get_application_url: Failed to follow application URL {application_url}: {str(e)}")
+                    application_url = ''
+        
+        # Extract email from page source
+        page_text = soup.get_text()
+        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        emails = re.findall(email_pattern, page_text)
+        final_email = emails[0] if emails else ''
+        logger.debug(f"get_application_url: Found email={final_email}")
+        
+        return application_url, final_email
+        
     except Exception as e:
-        logger.error(f"get_application_url_with_selenium: Failed to process {job_url}: {str(e)}")
+        logger.error(f"get_application_url: Failed to process {job_url}: {str(e)}")
         return '', ''
-    finally:
-        if driver:
-            driver.quit()
-            logger.debug("get_application_url_with_selenium: WebDriver closed")
 
 def scrape_job_details(job_url, licensed, session):
     """Scrape detailed job information from LinkedIn job page"""
@@ -630,8 +577,8 @@ def scrape_job_details(job_url, licensed, session):
         resolved_application_info = ''
         resolved_application_url = ''
         if licensed:
-            application_url, resolved_application_info = get_application_url_with_selenium(job_url, licensed)
-            logger.info(f"scrape_job_details: Selenium returned application_url={application_url}, resolved_application_info={resolved_application_info}")
+            application_url, resolved_application_info = get_application_url(job_url, soup, session, licensed)
+            logger.info(f"scrape_job_details: get_application_url returned application_url={application_url}, resolved_application_info={resolved_application_info}")
             resolved_application_url = application_url
         else:
             application_url = UNLICENSED_MESSAGE
