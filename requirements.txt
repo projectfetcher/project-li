@@ -8,3 +8,7 @@ language_tool_python
 torch
 huggingface_hub
 python-dotenv
+lxml
+urllib3
+selenium
+webdriver-manager
