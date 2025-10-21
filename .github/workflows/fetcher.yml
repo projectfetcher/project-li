@@ -29,7 +29,7 @@ on:
         required: false
         default: ''
         type: string
-      linkedin_cookies:  # NEW: LinkedIn cookies input
+      linkedin_cookies:
         description: 'LinkedIn Cookies JSON for authenticated scraping'
         required: false
         default: ''
@@ -45,14 +45,30 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5  # Updated to latest version
       with:
         python-version: '3.11'
         
-    - name: Install dependencies
+    - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 lxml urllib3
+        pip install requests beautifulsoup4 lxml urllib3 selenium  # Added selenium
+        
+    - name: Install Google Chrome
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget unzip fontconfig libfontconfig1 libjpeg8 libpng16-16 libx11-6 libxext6 libxrender1 xfonts-75dpi xfonts-base
+        wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+        sudo dpkg -i google-chrome-stable_current_amd64.deb
+        sudo apt-get -f install -y  # Fix missing dependencies
+        
+    - name: Install ChromeDriver
+      run: |
+        CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f 3 | cut -d '.' -f 1)
+        wget -N https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}.0.0.0/chromedriver-linux64.zip -P /tmp/
+        unzip /tmp/chromedriver-linux64.zip -d /tmp/
+        sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+        sudo chmod +x /usr/local/bin/chromedriver
         
     - name: Create uploads directory
       run: mkdir -p uploads
@@ -65,14 +81,14 @@ jobs:
         COUNTRY: ${{ github.event.inputs.country }}
         KEYWORD: ${{ github.event.inputs.keyword }}
         LICENSE_KEY: ${{ github.event.inputs.license_key }}
-        LINKEDIN_COOKIES: ${{ github.event.inputs.linkedin_cookies }}  # NEW: LinkedIn cookies env var
+        LINKEDIN_COOKIES: ${{ github.event.inputs.linkedin_cookies }}
       run: |
         echo "Starting job fetcher with authentication..."
         echo "Country: ${{ github.event.inputs.country }}"
         echo "Keyword: '${{ github.event.inputs.keyword }}'"
         echo "Site URL: ${{ github.event.inputs.wp_site_url }}"
         echo "License key: ${LICENSE_KEY:0:8}..."
-        echo "LinkedIn cookies: ${LINKEDIN_COOKIES:0:50}..." # Show first 50 chars
+        echo "LinkedIn cookies: ${LINKEDIN_COOKIES:0:50}..."
         python fetcher.py
         
     - name: Upload logs and results
@@ -86,4 +102,4 @@ jobs:
           uploads/processed_job_ids.json
           uploads/last_processed_page.txt
         retention-days: 7
-        compression-level: 6
+        compression-level: 6  # Fixed syntax by removing ..
