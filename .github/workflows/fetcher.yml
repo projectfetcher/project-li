@@ -57,7 +57,7 @@ jobs:
     - name: Install Google Chrome
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget unzip fontconfig libfontconfig1 libjpeg8 libpng16-16 libx11-6 libxext6 libxrender1 xfonts-75dpi xfonts-base jq  # Added jq for JSON parsing
+        sudo apt-get install -y wget unzip fontconfig libfontconfig1 libjpeg8 libpng16-16 libx11-6 libxext6 libxrender1 xfonts-75dpi xfonts-base
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
         sudo dpkg -i google-chrome-stable_current_amd64.deb
         sudo apt-get -f install -y
@@ -66,27 +66,29 @@ jobs:
       run: |
         # Get the full Chrome version (e.g., 141.0.7390.107)
         CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f 3)
-        echo "Detected Chrome version: $CHROME_VERSION"
+        CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d '.' -f 1)
+        echo "Detected Chrome version: $CHROME_VERSION (major: $CHROME_MAJOR)"
         
-        # Get the major version (e.g., 141)
-        CHROME_MAJOR="${CHROME_VERSION%%.*}"
-        echo "Chrome major version: $CHROME_MAJOR"
+        # Fetch the latest ChromeDriver version for the major version from chrome-for-testing
+        LATEST_JSON=$(curl -sS https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json)
+        CHROMEDRIVER_VERSION=$(echo $LATEST_JSON | grep -o "\"version\":\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+\"" | grep "\"$CHROME_MAJOR\." | head -1 | cut -d '"' -f 4)
         
-        # Fetch the latest stable Chrome for Testing versions (JSON)
-        curl -sS https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json | jq -r ".channels.Stable.version" > /tmp/chrome_for_testing_version.txt
-        CHROME_FOR_TESTING_VERSION=$(cat /tmp/chrome_for_testing_version.txt)
-        echo "Chrome for Testing stable version: $CHROME_FOR_TESTING_VERSION"
+        if [ -z "$CHROMEDRIVER_VERSION" ]; then
+          echo "No exact match found for Chrome $CHROME_MAJOR; falling back to latest stable (114.0.5735.90)"
+          CHROMEDRIVER_VERSION="114.0.5735.90"
+        fi
         
-        # Extract ChromeDriver download URL for linux64 from JSON
-        CHROMEDRIVER_URL=$(curl -sS https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json | jq -r ".channels.Stable.downloads.chromedriver[0].url | select(. != null)")
-        echo "ChromeDriver download URL: $CHROMEDRIVER_URL"
+        echo "Using ChromeDriver version: $CHROMEDRIVER_VERSION"
         
-        # Download and install ChromeDriver
-        wget -N "$CHROMEDRIVER_URL" -P /tmp/
-        CHROMEDRIVER_ZIP=$(basename "$CHROMEDRIVER_URL")
-        unzip /tmp/"$CHROMEDRIVER_ZIP" -d /tmp/
-        CHROMEDRIVER_DIR=$(unzip -l /tmp/"$CHROMEDRIVER_ZIP" | grep -oP '(?<= )[^/]+(?=/chromedriver$)')
-        sudo mv /tmp/"$CHROMEDRIVER_DIR"/chromedriver /usr/local/bin/chromedriver
+        # Download and install ChromeDriver (fallback to legacy URL if needed)
+        DOWNLOAD_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-${CHROMEDRIVER_VERSION}.zip"
+        if [ "$CHROMEDRIVER_VERSION" = "114.0.5735.90" ]; then
+          DOWNLOAD_URL="https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
+        fi
+        
+        wget -N "$DOWNLOAD_URL" -P /tmp/
+        unzip /tmp/*.zip -d /tmp/
+        sudo mv /tmp/chromedriver /usr/local/bin/chromedriver
         sudo chmod +x /usr/local/bin/chromedriver
         chromedriver --version
         
