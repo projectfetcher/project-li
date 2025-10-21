@@ -14,6 +14,12 @@ import os
 import sys
 import traceback
 import urllib.parse
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
@@ -29,14 +35,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get environment variables - FIXED: Use LICENSE_KEY instead of FETCHER_TOKEN
+# Get environment variables
 logger.debug("Loading environment variables")
 WP_SITE_URL = os.getenv('WP_SITE_URL')
 WP_USERNAME = os.getenv('WP_USERNAME')
 WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
 COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')  # Optional keyword
-LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # FIXED: License key for full data access
+LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # License key for full data access
 
 # URL encode country and keyword for LinkedIn search
 COUNTRY_ENCODED = urllib.parse.quote(COUNTRY or 'Worldwide')
@@ -64,7 +70,7 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-# FIXED: Valid license key for full data scraping
+# License key for full data scraping
 VALID_LICENSE_KEY = "A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5"
 UNLICENSED_MESSAGE = 'Get license: https://mimusjobs.com/job-fetcher'
 
@@ -134,7 +140,6 @@ def validate_environment():
     if not COUNTRY:
         missing.append("COUNTRY")
     
-    # LICENSE_KEY is optional
     if missing:
         logger.error(f"Missing required environment variables: {', '.join(missing)}")
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
@@ -153,7 +158,6 @@ def build_search_url(page=0):
         'start': str(page * 25)
     }
     
-    # Remove empty keyword param if no keyword
     if not KEYWORD:
         params.pop('keywords', None)
     
@@ -358,6 +362,84 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"Failed to save last page: {str(e)}")
 
+def setup_selenium_driver():
+    """Set up Selenium WebDriver with headless Chrome"""
+    chrome_options = Options()
+    chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument(f'user-agent={headers["user-agent"]}')
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        logger.debug("Selenium WebDriver initialized successfully")
+        return driver
+    except Exception as e:
+        logger.error(f"Failed to initialize Selenium WebDriver: {str(e)}")
+        raise
+
+def get_application_url_with_selenium(job_url, licensed):
+    """Use Selenium to click the Apply button and get the final application URL"""
+    if not licensed:
+        logger.debug("get_application_url_with_selenium: Unlicensed, returning UNLICENSED_MESSAGE")
+        return UNLICENSED_MESSAGE, UNLICENSED_MESSAGE
+    
+    driver = None
+    try:
+        driver = setup_selenium_driver()
+        logger.debug(f"get_application_url_with_selenium: Navigating to {job_url}")
+        driver.get(job_url)
+        
+        # Wait for the Apply button to be clickable
+        apply_button_selector = "#jobs-apply-button-id"
+        try:
+            apply_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, apply_button_selector))
+            )
+            logger.debug("get_application_url_with_selenium: Apply button found")
+            
+            # Get the initial href if available (before clicking)
+            initial_href = apply_button.get_attribute('href') or ''
+            logger.debug(f"get_application_url_with_selenium: Initial href={initial_href}")
+            
+            # Click the Apply button
+            apply_button.click()
+            logger.debug("get_application_url_with_selenium: Apply button clicked")
+            
+            # Wait for a potential redirect (up to 10 seconds)
+            time.sleep(5)  # Allow time for redirect
+            final_url = driver.current_url
+            logger.debug(f"get_application_url_with_selenium: Final URL after click={final_url}")
+            
+            # Check for email in the page content
+            page_source = driver.page_source
+            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+            emails = re.findall(email_pattern, page_source)
+            final_email = emails[0] if emails else ''
+            logger.debug(f"get_application_url_with_selenium: Found email={final_email}")
+            
+            # If no redirect occurred, use the initial href if valid
+            if final_url == job_url and initial_href:
+                logger.debug(f"get_application_url_with_selenium: No redirect, using initial href={initial_href}")
+                return initial_href, final_email
+            
+            return final_url, final_email
+            
+        except TimeoutException:
+            logger.warning(f"get_application_url_with_selenium: Apply button {apply_button_selector} not found or not clickable within timeout")
+            return '', ''
+        except WebDriverException as e:
+            logger.error(f"get_application_url_with_selenium: WebDriver error: {str(e)}")
+            return '', ''
+            
+    except Exception as e:
+        logger.error(f"get_application_url_with_selenium: Failed to process {job_url}: {str(e)}")
+        return '', ''
+    finally:
+        if driver:
+            driver.quit()
+            logger.debug("get_application_url_with_selenium: WebDriver closed")
+
 def scrape_job_details(job_url, licensed, session):
     """Scrape detailed job information from LinkedIn job page"""
     logger.debug(f"scrape_job_details called with job_url={job_url}, licensed={licensed}")
@@ -379,12 +461,9 @@ def scrape_job_details(job_url, licensed, session):
             company_logo_elem = soup.select_one("img.artdeco-entity-image.artdeco-entity-image--square-5")
             company_logo = company_logo_elem.get('src') if company_logo_elem and company_logo_elem.get('src') else ''
             if company_logo and 'media.licdn.com' in company_logo:
-                # Remove query parameters
                 company_logo = re.sub(r'\?.*$', '', company_logo)
-                # Ensure the URL ends with .jpg
                 if not company_logo.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
                     company_logo = f"{company_logo}.jpg"
-                # Validate the logo URL
                 try:
                     logo_response = session.head(company_logo, headers=headers, timeout=5)
                     content_type = logo_response.headers.get('content-type', '')
@@ -485,9 +564,7 @@ def scrape_job_details(job_url, licensed, session):
         if licensed:
             description_container = soup.select_one(".show-more-less-html__markup")
             if description_container:
-                # Extract text using .get_text() with newline separator
                 raw_text = description_container.get_text(separator='\n').strip()
-                # Split into paragraphs and filter out unwanted phrases
                 unwanted_phrases = [
                     "Never Miss a Job Update Again",
                     "Don't Keep! Kindly Share:",
@@ -514,7 +591,6 @@ def scrape_job_details(job_url, licensed, session):
                     elif norm_para:
                         logger.info(f"scrape_job_details: Removed duplicate paragraph for {job_title}: {para[:50]}...")
                 job_description = '\n\n'.join(unique_paragraphs)
-                # Clean up 'Show more/less' text and apply paragraph length limit
                 job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
                 job_description = split_paragraphs(job_description, max_length=200)
                 delimiter = "\n\n"
@@ -547,71 +623,30 @@ def scrape_job_details(job_url, licensed, session):
             description_application_info = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set description_application_info={UNLICENSED_MESSAGE}")
         
-        # Application URL (licensed only)
+        # Application URL using Selenium
         application_url = ''
-        if licensed:
-            application_anchor = soup.select_one("#teriary-cta-container > div > a")
-            application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
-            logger.info(f"scrape_job_details: Scraped Application URL: {application_url}")
-        else:
-            application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set application_url={UNLICENSED_MESSAGE}")
-        
-        # Resolve application URL
         resolved_application_info = ''
         resolved_application_url = ''
-        if licensed and application_url and application_url != UNLICENSED_MESSAGE:
-            logger.debug(f"scrape_job_details: Following application URL: {application_url}")
-            try:
-                time.sleep(5)
-                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True)
-                logger.debug(f"scrape_job_details: Application URL GET response status={resp_app.status_code}, headers={resp_app.headers}, final_url={resp_app.url}")
-                resolved_application_url = resp_app.url
-                logger.info(f"scrape_job_details: Resolved Application URL: {resolved_application_url}")
-                app_soup = BeautifulSoup(resp_app.text, 'html.parser')
-                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                emails = re.findall(email_pattern, resp_app.text)
-                if emails:
-                    resolved_application_info = emails[0]
-                    logger.info(f"scrape_job_details: Found email in application page: {resolved_application_info}")
-                else:
-                    links = app_soup.find_all('a', href=True)
-                    for link in links:
-                        href = link['href']
-                        if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                            resolved_application_info = href
-                            logger.info(f"scrape_job_details: Found application link in application page: {resolved_application_info}")
-                            break
-            except Exception as e:
-                logger.error(f"scrape_job_details: Failed to follow application URL redirect: {str(e)}", exc_info=True)
-                error_str = str(e)
-                external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
-                if external_url_match:
-                    external_url = external_url_match.group(1)
-                    resolved_application_url = f"https://{external_url}"
-                    logger.info(f"scrape_job_details: Extracted external URL from error for application: {resolved_application_url}")
-                else:
-                    resolved_application_url = description_application_url if description_application_url else application_url
-                    logger.warning(f"scrape_job_details: No external URL found in error, using fallback: {resolved_application_url}")
+        if licensed:
+            application_url, resolved_application_info = get_application_url_with_selenium(job_url, licensed)
+            logger.info(f"scrape_job_details: Selenium returned application_url={application_url}, resolved_application_info={resolved_application_info}")
+            resolved_application_url = application_url  # Since Selenium follows redirects
         else:
+            application_url = UNLICENSED_MESSAGE
             resolved_application_info = UNLICENSED_MESSAGE
             resolved_application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set resolved_application_info={UNLICENSED_MESSAGE}, resolved_application_url={UNLICENSED_MESSAGE}")
+            logger.debug(f"scrape_job_details: Unlicensed, set application_url={UNLICENSED_MESSAGE}, resolved_application_info={UNLICENSED_MESSAGE}, resolved_application_url={UNLICENSED_MESSAGE}")
         
         # Final application details
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
         final_application_url = description_application_url if description_application_url else ''
         if licensed:
-            if final_application_email and resolved_application_info and '@' in resolved_application_info:
-                final_application_email = final_application_email if final_application_email == resolved_application_info else final_application_email
-            elif resolved_application_info and '@' in resolved_application_info:
-                final_application_email = final_application_email or resolved_application_info
+            if resolved_application_info and '@' in resolved_application_info:
+                final_application_email = resolved_application_info
                 logger.debug(f"scrape_job_details: Set final_application_email={final_application_email}")
-            if description_application_url and resolved_application_url:
-                final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
-            elif resolved_application_url:
+            if resolved_application_url:
                 final_application_url = resolved_application_url
-            logger.debug(f"scrape_job_details: Set final_application_url={final_application_url}")
+                logger.debug(f"scrape_job_details: Set final_application_url={final_application_url}")
         else:
             final_application_email = UNLICENSED_MESSAGE
             final_application_url = UNLICENSED_MESSAGE
@@ -631,8 +666,7 @@ def scrape_job_details(job_url, licensed, session):
             if company_url and company_url != UNLICENSED_MESSAGE:
                 logger.info(f"scrape_job_details: Fetching company page: {company_url}")
                 try:
-                    # Attempt to fetch company page with retry
-                    for attempt in range(3):  # Try three times
+                    for attempt in range(3):
                         try:
                             company_response = session.get(company_url, headers=headers, timeout=15)
                             logger.debug(f"scrape_job_details: Company page GET response status={company_response.status_code}, headers={company_response.headers}")
@@ -645,18 +679,15 @@ def scrape_job_details(job_url, licensed, session):
                             time.sleep(2)
                     company_soup = BeautifulSoup(company_response.text, 'html.parser')
                     
-                    # Scrape company details using data-test-id
                     company_details_elem = company_soup.select_one("p[data-test-id='about-us__description']")
                     company_details = company_details_elem.get_text().strip() if company_details_elem else ''
                     logger.info(f"scrape_job_details: Scraped Company Details: {company_details[:100] + '...' if company_details else ''}")
                     
-                    # Scrape website using data-test-id
                     website_div = company_soup.select_one("div[data-test-id='about-us__website']")
                     company_website_anchor = website_div.select_one("dd a") if website_div else None
                     company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
                     logger.info(f"scrape_job_details: Scraped Company Website URL: {company_website_url}")
                     
-                    # Handle LinkedIn redirect URLs
                     if 'linkedin.com/redir/redirect' in company_website_url:
                         parsed_url = urlparse(company_website_url)
                         query_params = parse_qs(parsed_url.query)
@@ -666,7 +697,6 @@ def scrape_job_details(job_url, licensed, session):
                         else:
                             logger.warning(f"scrape_job_details: No 'url' param in LinkedIn redirect for {company_name}")
                     
-                    # Resolve external company website
                     if company_website_url and 'linkedin.com' not in company_website_url:
                         logger.debug(f"scrape_job_details: Following company website URL: {company_website_url}")
                         try:
@@ -676,46 +706,9 @@ def scrape_job_details(job_url, licensed, session):
                             company_website_url = resp_company_web.url
                             logger.info(f"scrape_job_details: Resolved Company Website URL: {company_website_url}")
                         except Exception as e:
-                            logger.error(f"scrape_job_details: Failed to resolve company website URL: {str(e)}", exc_info=True)
-                            error_str = str(e)
-                            external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
-                            if external_url_match:
-                                external_url = external_url_match.group(1)
-                                company_website_url = f"https://{external_url}"
-                                logger.info(f"scrape_job_details: Extracted external URL from error for company website: {company_website_url}")
-                            else:
-                                logger.warning(f"scrape_job_details: No external URL found in error for {company_name}")
-                                company_website_url = ''
-                    else:
-                        # Try to find website in company description
-                        if company_details:
-                            url_pattern = r'https?://(?!www\.linkedin\.com)[^\s]+'
-                            urls = re.findall(url_pattern, company_details)
-                            if urls:
-                                company_website_url = urls[0]
-                                logger.info(f"scrape_job_details: Found company website in description: {company_website_url}")
-                                try:
-                                    time.sleep(5)
-                                    resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True)
-                                    logger.debug(f"scrape_job_details: Company website description GET response status={resp_company_web.status_code}, headers={resp_company_web.headers}, final_url={resp_company_web.url}")
-                                    company_website_url = resp_company_web.url
-                                    logger.info(f"scrape_job_details: Resolved Company Website URL from description: {company_website_url}")
-                                except Exception as e:
-                                    logger.error(f"scrape_job_details: Failed to resolve company website URL from description: {str(e)}", exc_info=True)
-                                    company_website_url = ''
-                            else:
-                                logger.warning(f"scrape_job_details: No valid company website URL found in description for {company_name}")
-                                company_website_url = ''
-                        else:
-                            logger.warning(f"scrape_job_details: No company description found for {company_name}")
+                            logger.error(f"scrape_job_details: Failed to resolve company website URL: {str(e)}")
                             company_website_url = ''
                     
-                    # Skip LinkedIn URLs
-                    if company_website_url and 'linkedin.com' in company_website_url:
-                        logger.warning(f"scrape_job_details: Skipping LinkedIn URL for company website: {company_website_url}")
-                        company_website_url = ''
-                    
-                    # Helper function to get company details
                     def get_company_detail(label):
                         logger.debug(f"scrape_job_details: get_company_detail called with label={label}")
                         div_selector = f"div[data-test-id='about-us__{label.lower()}']"
@@ -729,43 +722,14 @@ def scrape_job_details(job_url, licensed, session):
                         return ''
                     
                     company_industry = get_company_detail("industry")
-                    logger.info(f"scrape_job_details: Scraped Company Industry: {company_industry}")
                     company_size = get_company_detail("size")
-                    logger.info(f"scrape_job_details: Scraped Company Size: {company_size}")
                     company_headquarters = get_company_detail("headquarters")
-                    logger.info(f"scrape_job_details: Scraped Company Headquarters: {company_headquarters}")
                     company_type = get_company_detail("organizationType")
-                    logger.info(f"scrape_job_details: Scraped Company Type: {company_type}")
                     company_founded = get_company_detail("foundedOn")
-                    logger.info(f"scrape_job_details: Scraped Company Founded: {company_founded}")
                     company_specialties = get_company_detail("specialties")
-                    logger.info(f"scrape_job_details: Scraped Company Specialties: {company_specialties}")
-                    
-                    # For address, get primary location
-                    primary_li = company_soup.select_one("li span.tag-sm.tag-enabled")
-                    if primary_li:
-                        address_div = primary_li.find_next_sibling("div")
-                        if address_div:
-                            company_address = address_div.get_text(separator=', ').strip()
-                            logger.info(f"scrape_job_details: Scraped Primary Company Address: {company_address}")
-                        else:
-                            company_address = company_headquarters
-                            logger.warning(f"scrape_job_details: No address div found, using headquarters: {company_address}")
-                    else:
-                        company_address = company_headquarters
-                        logger.warning(f"scrape_job_details: No primary location found, using headquarters: {company_address}")
-                
-                except Exception as e:
-                    logger.error(f"scrape_job_details: Error fetching company page: {company_url} - {str(e)}", exc_info=True)
-                    company_details = ''
-                    company_website_url = ''
-                    company_industry = ''
-                    company_size = ''
-                    company_headquarters = ''
-                    company_type = ''
-                    company_founded = ''
-                    company_specialties = ''
-                    company_address = ''
+                    company_address = company_headquarters
+                    logger.info(f"scrape_job_details: Scraped company details: industry={company_industry}, size={company_size}, headquarters={company_headquarters}, type={company_type}, founded={company_founded}, specialties={company_specialties}, address={company_address}")
+        
         else:
             company_details = UNLICENSED_MESSAGE
             company_website_url = UNLICENSED_MESSAGE
@@ -823,7 +787,7 @@ def crawl(wp_headers, processed_ids, licensed):
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
-    pages_to_scrape = 100  # Reduced for testing
+    pages_to_scrape = 100
     
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
@@ -833,7 +797,7 @@ def crawl(wp_headers, processed_ids, licensed):
         url = build_search_url(i)
         logger.info(f"Fetching page {i}: {url}")
         
-        time.sleep(random.uniform(3, 7))  # Reduced delay for testing
+        time.sleep(random.uniform(3, 7))
         
         try:
             response = session.get(url, headers=headers, timeout=20)
@@ -853,7 +817,7 @@ def crawl(wp_headers, processed_ids, licensed):
                 logger.warning(f"No jobs found on page {i}, possibly end of results")
                 break
             
-            for index, job_url in enumerate(urls):  # Process all jobs on the page
+            for index, job_url in enumerate(urls):
                 logger.info(f"Processing job {index + 1}/{len(urls)}: {job_url}")
                 
                 job_data = scrape_job_details(job_url, licensed, session)
@@ -889,14 +853,12 @@ def crawl(wp_headers, processed_ids, licensed):
                 
                 total_jobs += 1
                 
-                # Save company
                 company_id, company_msg = save_company_to_wordpress(index, job_dict, wp_headers, licensed)
                 if not company_id:
                     logger.error(f"Failed to save company: {company_msg}")
                     failure_count += 1
                     continue
                 
-                # Save job
                 job_post_id, job_msg = save_article_to_wordpress(index, job_dict, company_id, wp_headers, licensed)
                 
                 if job_post_id:
@@ -908,7 +870,7 @@ def crawl(wp_headers, processed_ids, licensed):
                     failure_count += 1
                     print(f"✗ Failed: {job_title} at {company_name} - {job_msg}")
                 
-                time.sleep(random.uniform(2, 5))  # Rate limiting
+                time.sleep(random.uniform(2, 5))
             
             save_last_page(i + 1)
             
@@ -934,20 +896,15 @@ def main():
         print(f"📍 Country: {COUNTRY}")
         print(f"🔍 Keyword: {KEYWORD or 'ALL JOBS'}")
         
-        # Validate environment (LICENSE_KEY is optional)
         validate_environment()
         
-        # FIXED: Check license with proper LICENSE_KEY validation
         licensed = get_license_status()
         
-        # Create WP headers
         wp_headers = create_wp_auth_headers()
         
-        # Load processed IDs
         processed_ids = load_processed_ids()
         print(f"📋 Found {len(processed_ids)} previously processed jobs")
         
-        # Start crawling
         crawl(wp_headers, processed_ids, licensed)
         
         print("✅ Job fetcher completed!")
