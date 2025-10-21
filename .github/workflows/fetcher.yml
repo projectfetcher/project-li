@@ -1,4 +1,5 @@
 name: Job Fetcher Service
+
 on:
   workflow_dispatch:
     inputs:
@@ -48,32 +49,29 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+        cache: 'pip'  # Cache pip dependencies for faster runs
 
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 lxml urllib3 selenium
-
-    - name: Install Google Chrome
+    - name: Install system dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y wget unzip fontconfig libfontconfig1 libjpeg8 libpng16-16 libx11-6 libxext6 libxrender1 xfonts-75dpi xfonts-base
+
+    - name: Install Google Chrome
+      run: |
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
         sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -f install -y
+        google-chrome --version
 
     - name: Install ChromeDriver from local ZIP
       run: |
         set -e
         echo "Installing ChromeDriver from uploaded ZIP file..."
-        if [ -f "./chromedriver-linux64.zip" ]; then
-          ZIPFILE="./chromedriver-linux64.zip"
-        elif [ -f "./chromedriver.zip" ]; then
-          ZIPFILE="./chromedriver.zip"
+        if [ -f "./chromedriver_linux64.zip" ]; then
+          ZIPFILE="./chromedriver_linux64.zip"
         else
           echo "❌ ChromeDriver ZIP not found in repository root!"
           exit 1
         fi
-
         unzip -o "$ZIPFILE" -d /tmp/
         if [ -d "/tmp/chromedriver-linux64" ]; then
           sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/
@@ -85,6 +83,16 @@ jobs:
         fi
         sudo chmod +x /usr/local/bin/chromedriver
         chromedriver --version
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f "requirements.txt" ]; then
+          pip install -r requirements.txt
+        else
+          pip install requests beautifulsoup4 lxml urllib3 selenium
+        fi
+        pip list  # Log installed packages for debugging
 
     - name: Create uploads directory
       run: mkdir -p uploads
@@ -99,11 +107,11 @@ jobs:
         LICENSE_KEY: ${{ github.event.inputs.license_key }}
         LINKEDIN_COOKIES: ${{ github.event.inputs.linkedin_cookies }}
       run: |
-        echo "Starting job fetcher..."
+        echo "Starting job fetcher with authentication..."
         echo "Country: $COUNTRY"
         echo "Keyword: $KEYWORD"
-        echo "Site: $WP_SITE_URL"
-        echo "License: ${LICENSE_KEY:0:8}..."
+        echo "Site URL: $WP_SITE_URL"
+        echo "License key: ${LICENSE_KEY:0:8}..."
         python fetcher.py
 
     - name: Upload logs and results
