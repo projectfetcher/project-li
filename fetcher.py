@@ -15,6 +15,14 @@ import sys
 import traceback
 import urllib.parse
 
+# Selenium imports
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
 
@@ -547,34 +555,53 @@ def scrape_job_details(job_url, licensed, session):
             description_application_info = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set description_application_info={UNLICENSED_MESSAGE}")
         
-        # Application URL (licensed only)
+        # Application URL (licensed only) - Set to empty since no direct href, will use Selenium for resolution
         application_url = ''
         if licensed:
-            application_anchor = soup.select_one("#jobs-apply-button-id")
-            application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
-            logger.info(f"scrape_job_details: Scraped Application URL: {application_url}")
+            logger.info(f"scrape_job_details: No direct href for application button, deferring to Selenium for resolution")
         else:
             application_url = UNLICENSED_MESSAGE
             logger.debug(f"scrape_job_details: Unlicensed, set application_url={UNLICENSED_MESSAGE}")
         
-        # Resolve application URL
+        # Resolve application URL using Selenium
         resolved_application_info = ''
         resolved_application_url = ''
-        if licensed and application_url and application_url != UNLICENSED_MESSAGE:
-            logger.debug(f"scrape_job_details: Following application URL: {application_url}")
+        if licensed:
+            logger.debug(f"scrape_job_details: Initializing Selenium for application resolution")
+            chrome_options = Options()
+            chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument(f'user-agent={headers["user-agent"]}')
+            driver = webdriver.Chrome(options=chrome_options)
             try:
-                time.sleep(5)
-                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True)
-                logger.debug(f"scrape_job_details: Application URL GET response status={resp_app.status_code}, headers={resp_app.headers}, final_url={resp_app.url}")
-                resolved_application_url = resp_app.url
-                logger.info(f"scrape_job_details: Resolved Application URL: {resolved_application_url}")
-                app_soup = BeautifulSoup(resp_app.text, 'html.parser')
+                driver.get(job_url)
+                wait = WebDriverWait(driver, 30)
+                apply_button = wait.until(EC.element_to_be_clickable((By.ID, "jobs-apply-button-id")))
+                original_window = driver.current_window_handle
+                apply_button.click()
+                time.sleep(50)  # Wait 50 seconds for page to load as specified
+                # Check for new window
+                if len(driver.window_handles) > 1:
+                    new_window = [wh for wh in driver.window_handles if wh != original_window][0]
+                    driver.switch_to.window(new_window)
+                    wait.until(EC.url_changes(''))
+                    resolved_application_url = driver.current_url
+                    app_page_source = driver.page_source
+                    logger.info(f"scrape_job_details: Resolved Application URL (new window): {resolved_application_url}")
+                else:
+                    wait.until(EC.url_changes(job_url))
+                    resolved_application_url = driver.current_url
+                    app_page_source = driver.page_source
+                    logger.info(f"scrape_job_details: Resolved Application URL (same window): {resolved_application_url}")
+                # Parse for email or links
                 email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                emails = re.findall(email_pattern, resp_app.text)
+                emails = re.findall(email_pattern, app_page_source)
                 if emails:
                     resolved_application_info = emails[0]
                     logger.info(f"scrape_job_details: Found email in application page: {resolved_application_info}")
                 else:
+                    app_soup = BeautifulSoup(app_page_source, 'html.parser')
                     links = app_soup.find_all('a', href=True)
                     for link in links:
                         href = link['href']
@@ -582,8 +609,11 @@ def scrape_job_details(job_url, licensed, session):
                             resolved_application_info = href
                             logger.info(f"scrape_job_details: Found application link in application page: {resolved_application_info}")
                             break
+            except (TimeoutException, NoSuchElementException) as e:
+                logger.error(f"scrape_job_details: Selenium timeout or element not found: {str(e)}")
+                resolved_application_url = description_application_url if description_application_url else application_url
             except Exception as e:
-                logger.error(f"scrape_job_details: Failed to follow application URL redirect: {str(e)}", exc_info=True)
+                logger.error(f"scrape_job_details: Failed to resolve application with Selenium: {str(e)}", exc_info=True)
                 error_str = str(e)
                 external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
                 if external_url_match:
@@ -593,6 +623,8 @@ def scrape_job_details(job_url, licensed, session):
                 else:
                     resolved_application_url = description_application_url if description_application_url else application_url
                     logger.warning(f"scrape_job_details: No external URL found in error, using fallback: {resolved_application_url}")
+            finally:
+                driver.quit()
         else:
             resolved_application_info = UNLICENSED_MESSAGE
             resolved_application_url = UNLICENSED_MESSAGE
