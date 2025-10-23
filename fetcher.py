@@ -528,7 +528,7 @@ def scrape_job_details(job_url, licensed, session):
         # Application info from description
         description_application_info = ''
         description_application_url = ''
-        if licensed and job_description and job_description != UNLICENSED_MESSAGE:
+        if job_description and job_description != UNLICENSED_MESSAGE:
             email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
             emails = re.findall(email_pattern, job_description)
             if emails:
@@ -543,24 +543,17 @@ def scrape_job_details(job_url, licensed, session):
                         description_application_info = href
                         logger.info(f"scrape_job_details: Found application link in job description: {description_application_info}")
                         break
-        else:
-            description_application_info = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set description_application_info={UNLICENSED_MESSAGE}")
         
-        # Application URL (licensed only)
+        # Application URL
         application_url = ''
-        if licensed:
-            application_anchor = soup.select_one("#teriary-cta-container > div > a")
-            application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
-            logger.info(f"scrape_job_details: Scraped Application URL: {application_url}")
-        else:
-            application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set application_url={UNLICENSED_MESSAGE}")
+        application_anchor = soup.select_one("#teriary-cta-container > div > a")
+        application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else ''
+        logger.info(f"scrape_job_details: Scraped Application URL: {application_url}")
         
         # Resolve application URL
         resolved_application_info = ''
         resolved_application_url = ''
-        if licensed and application_url and application_url != UNLICENSED_MESSAGE:
+        if application_url:
             logger.debug(f"scrape_job_details: Following application URL: {application_url}")
             try:
                 time.sleep(5)
@@ -593,29 +586,20 @@ def scrape_job_details(job_url, licensed, session):
                 else:
                     resolved_application_url = description_application_url if description_application_url else application_url
                     logger.warning(f"scrape_job_details: No external URL found in error, using fallback: {resolved_application_url}")
-        else:
-            resolved_application_info = UNLICENSED_MESSAGE
-            resolved_application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set resolved_application_info={UNLICENSED_MESSAGE}, resolved_application_url={UNLICENSED_MESSAGE}")
         
         # Final application details
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
         final_application_url = description_application_url if description_application_url else ''
-        if licensed:
-            if final_application_email and resolved_application_info and '@' in resolved_application_info:
-                final_application_email = final_application_email if final_application_email == resolved_application_info else final_application_email
-            elif resolved_application_info and '@' in resolved_application_info:
-                final_application_email = final_application_email or resolved_application_info
-                logger.debug(f"scrape_job_details: Set final_application_email={final_application_email}")
-            if description_application_url and resolved_application_url:
-                final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
-            elif resolved_application_url:
-                final_application_url = resolved_application_url
-            logger.debug(f"scrape_job_details: Set final_application_url={final_application_url}")
-        else:
-            final_application_email = UNLICENSED_MESSAGE
-            final_application_url = UNLICENSED_MESSAGE
-            logger.debug(f"scrape_job_details: Unlicensed, set final_application_email={UNLICENSED_MESSAGE}, final_application_url={UNLICENSED_MESSAGE}")
+        if final_application_email and resolved_application_info and '@' in resolved_application_info:
+            final_application_email = final_application_email if final_application_email == resolved_application_info else final_application_email
+        elif resolved_application_info and '@' in resolved_application_info:
+            final_application_email = final_application_email or resolved_application_info
+            logger.debug(f"scrape_job_details: Set final_application_email={final_application_email}")
+        if description_application_url and resolved_application_url:
+            final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
+        elif resolved_application_url:
+            final_application_url = resolved_application_url
+        logger.debug(f"scrape_job_details: Set final_application_url={final_application_url}")
         
         # Company details (licensed only)
         company_details = ''
