@@ -31,12 +31,12 @@ logger = logging.getLogger(__name__)
 
 # Get environment variables - FIXED: Use LICENSE_KEY instead of FETCHER_TOKEN
 logger.debug("Loading environment variables")
-WP_SITE_URL = os.getenv('WP_SITE_URL', 'https://mauritius.mimusjobs.com')
-WP_USERNAME = os.getenv('WP_USERNAME', 'admin')
-WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD', '1234')
-COUNTRY = os.getenv('COUNTRY', 'united states')
+WP_SITE_URL = os.getenv('WP_SITE_URL')
+WP_USERNAME = os.getenv('WP_USERNAME')
+WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')
+COUNTRY = os.getenv('COUNTRY')
 KEYWORD = os.getenv('KEYWORD', '')  # Optional keyword
-LICENSE_KEY = os.getenv('LICENSE_KEY', 'A1B2C-3D4E5-F6G7H-8I9J0-K1L2M-3N4O5')  # FIXED: License key for full data access
+LICENSE_KEY = os.getenv('LICENSE_KEY', '')  # FIXED: License key for full data access
 
 # URL encode country and keyword for LinkedIn search
 COUNTRY_ENCODED = urllib.parse.quote(COUNTRY or 'Worldwide')
